@@ -1,14 +1,13 @@
 """
 AI Concierge Agent Module for Mud & Meadows Resort.
 
-Orchestrates multi-turn conversation, natural language understanding,
-Gemini 3.5 Flash function calling (tools), and generates structured
-UI Cards (Room Cards, Pricing Quotes, Add-ons, and Razorpay triggers)
-for the embeddable chat widget.
+Executes a bounded, multi-turn ReAct tool-calling loop using Google Gemini,
+backed by SQLite WAL session persistence, sliding-window context pruning,
+exponential backoff retries, and deterministic pricing delegation.
 """
 
 import asyncio
-import json
+from datetime import date, timedelta
 import logging
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
@@ -17,39 +16,38 @@ from google.genai import types
 
 from config import settings
 from resort_client import resort_client
-from pricing_engine import pricing_engine, AddOnItem
+from pricing_engine import pricing_engine
 from notification_service import notification_service
+from session_store import session_store
 
 logger = logging.getLogger(__name__)
 
+MAX_HISTORY_MESSAGES = 12
+
 
 class AgentResponse(BaseModel):
-    """Structured response returned to the frontend chat widget."""
+    """Structured response schema consumed by the Shadow DOM chat widget."""
     text: str
     cards: List[Dict[str, Any]] = []
-    action: Optional[str] = None  # 'SHOW_ROOMS', 'SHOW_QUOTE', 'TRIGGER_PAYMENT', 'CONFIRMED'
+    action: Optional[str] = None
     payload: Optional[Dict[str, Any]] = None
 
-
-# =============================================================================
-# GEMINI FUNCTION / TOOL DECLARATIONS
-# =============================================================================
 
 TOOLS_DECLARATION = types.Tool(
     function_declarations=[
         types.FunctionDeclaration(
             name="search_cottages",
-            description="Search available resort cottages and luxury villas by check-in date, check-out date, and number of guests.",
+            description="Search available resort cottages and villas by check-in date, check-out date, and guest count.",
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
                     "check_in": types.Schema(
                         type=types.Type.STRING,
-                        description="Check-in date in YYYY-MM-DD format (e.g. 2026-12-01)"
+                        description="Check-in date in YYYY-MM-DD format"
                     ),
                     "check_out": types.Schema(
                         type=types.Type.STRING,
-                        description="Check-out date in YYYY-MM-DD format (e.g. 2026-12-03)"
+                        description="Check-out date in YYYY-MM-DD format"
                     ),
                     "guests": types.Schema(
                         type=types.Type.INTEGER,
@@ -61,13 +59,13 @@ TOOLS_DECLARATION = types.Tool(
         ),
         types.FunctionDeclaration(
             name="get_cottage_details",
-            description="Get detailed specifications, amenities, bed configuration, and pricing of a specific cottage.",
+            description="Fetch detailed specifications, amenities, and pricing for a specific cottage.",
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
                     "cottage_id": types.Schema(
                         type=types.Type.STRING,
-                        description="Unique ID of the cottage"
+                        description="Unique cottage identifier"
                     ),
                 },
                 required=["cottage_id"],
@@ -75,13 +73,13 @@ TOOLS_DECLARATION = types.Tool(
         ),
         types.FunctionDeclaration(
             name="get_resort_services",
-            description="Explore resort add-ons: dining menu, spa/wellness treatments, or local nature experiences.",
+            description="Retrieve resort amenities: dining menu, wellness/spa programs, or local experiences.",
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
                     "category": types.Schema(
                         type=types.Type.STRING,
-                        description="Category to explore: 'dining', 'wellness', or 'experiences'"
+                        description="Category: 'dining', 'wellness', or 'experiences'"
                     ),
                 },
                 required=["category"],
@@ -89,7 +87,7 @@ TOOLS_DECLARATION = types.Tool(
         ),
         types.FunctionDeclaration(
             name="calculate_booking_quote",
-            description="Calculate exact mathematical price quote including base room rent, extra beds, GST taxes, and coupons.",
+            description="Compute an auditable mathematical quote including room tariff, extra bedding, GST taxes, and coupons.",
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
@@ -98,30 +96,37 @@ TOOLS_DECLARATION = types.Tool(
                     "check_out": types.Schema(type=types.Type.STRING, description="Check-out date YYYY-MM-DD"),
                     "adults": types.Schema(type=types.Type.INTEGER, description="Number of adults"),
                     "children": types.Schema(type=types.Type.INTEGER, description="Number of children"),
-                    "extra_beds": types.Schema(type=types.Type.INTEGER, description="Number of extra beds requested"),
-                    "coupon_code": types.Schema(type=types.Type.STRING, description="Optional coupon/promo code"),
+                    "extra_beds": types.Schema(type=types.Type.INTEGER, description="Requested extra beds"),
+                    "coupon_code": types.Schema(type=types.Type.STRING, description="Optional promo code"),
                 },
                 required=["cottage_id", "check_in", "check_out"],
             ),
         ),
         types.FunctionDeclaration(
             name="lookup_guest_booking",
-            description="Retrieve existing reservation details and status using the guest's email address.",
+            description="Look up an existing reservation. Requires BOTH the registered email AND a secondary verifier (booking_reference or last 4 phone digits) to protect guest privacy.",
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
                     "email": types.Schema(type=types.Type.STRING, description="Registered guest email address"),
+                    "verification_token": types.Schema(
+                        type=types.Type.STRING,
+                        description="Either the Booking Reference ID or the last 4 digits of the registered phone number"
+                    ),
                 },
-                required=["email"],
+                required=["email", "verification_token"],
             ),
         ),
         types.FunctionDeclaration(
             name="send_whatsapp_quote",
-            description="Format and prepare an official reservation quote link targeted to a guest's mobile phone number for WhatsApp.",
+            description="Prepare an official WhatsApp Click-to-Chat quotation link for the guest's mobile number.",
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
-                    "phone_number": types.Schema(type=types.Type.STRING, description="Guest's 10-digit mobile number (e.g. 9876543210 or +919876543210)"),
+                    "phone_number": types.Schema(
+                        type=types.Type.STRING,
+                        description="Guest 10-digit Indian mobile number or international format"
+                    ),
                 },
                 required=["phone_number"],
             ),
@@ -129,97 +134,108 @@ TOOLS_DECLARATION = types.Tool(
     ]
 )
 
+
 def get_system_instruction(company_name: str) -> str:
+    today = date.today()
     return f"""
-Your name is Shruti. You are the dedicated, warm, and highly attentive guest concierge for '{company_name}' (luxury resort).
-You always introduce yourself as Shruti. You communicate naturally, warmly, and gracefully like a real professional resort concierge.
-Your SOLE purpose is to assist guests with inquiries directly related to {company_name}: our luxury cottages/villas, room availability, stay pricing quotes, dining menus, wellness/spa programs, resort activities, location, and bookings.
+You are Shruti, the guest concierge for '{company_name}' luxury eco-resort.
+Today's Date: {today.isoformat()} ({today.strftime('%A')}). Use this date whenever guests refer to relative dates like "this weekend", "tomorrow", or "next month".
 
-STRICT DOMAIN GUARDRAILS & BOUNDARY:
-- You are Shruti, representing ONLY '{company_name}'. You are NOT a general-purpose AI assistant.
-- You must STRICTLY REFUSE to answer any questions outside of {company_name}.
-- If a guest asks about general knowledge, world politics, country leaders (e.g. "who is the PM of Nepal", "who is the president of US"), celebrities, current news, history, science, coding, homework, math puzzles, or other unrelated topics:
-  DO NOT answer the question under any circumstances.
-  Instead, politely and warmly decline with a courteous message:
-  "I am Shruti, your dedicated guest concierge for {company_name}. I can only assist with inquiries regarding our resort, luxury cottages, dining, wellness experiences, and stay bookings. How may I assist your visit to {company_name} today?"
-  (Respond in the guest's language: if they ask in Hindi, decline politely in Hindi introducing yourself as Shruti; if in English, decline in English).
+STRICT DOMAIN BOUNDARIES:
+- Represent ONLY '{company_name}': cottages, availability, pricing quotes, dining, wellness/spa, activities, and reservations.
+- Strictly decline out-of-scope questions (politics, trivia, general programming, competitors) politely in the guest's language, guiding them back to planning their stay.
+- Privacy Rule: NEVER reveal reservation details from `lookup_guest_booking` unless the guest provides BOTH their email AND either their booking ID or the last 4 digits of their phone number.
 
-Key Operational Guidelines:
-1. Tone & Persona: Hospitable, warm, courteous, natural, and helpful. Always carry yourself as Shruti from {company_name}.
-2. Multilingual: Guests may write or speak in English, Hindi, Hinglish, or regional languages. Understand their intent and respond in the appropriate language.
-3. Information & Calculations:
-   - When guests ask about rooms or availability: call `search_cottages`.
-   - When guests ask about cottage specifications or bed configuration: call `get_cottage_details`.
-   - When guests want pricing or expenditure calculations for stays or multiple rooms: call `search_cottages` or `calculate_booking_quote` to get live rates and compute the exact breakdown clearly for them.
-   - When guests ask about dining, spa, or activities: call `get_resort_services`.
-   - When guests ask to check existing bookings: call `lookup_guest_booking`.
-   - When guests want a quote sent on WhatsApp: call `send_whatsapp_quote`.
-4. Visual UI Cards: Relevant interactive cards (villa cards, quote cards) are displayed in the chat. Tell the guest they can review the cards or click them to proceed. Quote cards include direct 1-tap WhatsApp sharing and instant payment buttons.
+CONCIERGE GUIDELINES:
+1. Warm, concise, natural hospitality tone in English or Hindi depending on how the guest addresses you.
+2. Multi-step execution: Never invent tariffs or tax rates. Always invoke `search_cottages` and `calculate_booking_quote` so Python computes deterministic Indian GST (12% up to INR 7,500/night, 18% above INR 7,500/night).
+3. If the guest does not specify check-in/out dates when asking for sample rates, default to upcoming dates starting two days from today ({today.isoformat()}).
+4. After generating a quote card, remind the guest they can share the summary directly on WhatsApp or reserve online from the card controls.
 """
 
 
+def _trim_history(history: List[types.Content], max_messages: int = MAX_HISTORY_MESSAGES) -> List[types.Content]:
+    """
+    Trims conversation history to bound input token usage while preserving
+    valid user -> model -> function_response message boundaries.
+    """
+    if len(history) <= max_messages:
+        return history
+
+    sliced = history[-max_messages:]
+    # Ensure the first message in context is a plain user text message,
+    # never an orphaned function_response or model turn.
+    for idx, content in enumerate(sliced):
+        is_user_text = (
+            content.role == "user"
+            and content.parts
+            and any(p.text for p in content.parts)
+            and not any(p.function_response for p in content.parts)
+        )
+        if is_user_text:
+            return sliced[idx:]
+
+    return sliced[-2:] if len(sliced) >= 2 else sliced
+
+
 class ResortAgent:
-    """The Conversational Agent managing session context and tool dispatch."""
+    """Orchestrates guest sessions, ReAct reasoning steps, and backend tools."""
 
     def __init__(self):
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        # Use active model with full available quota
-        self.model_candidates = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.8-flash"]
-        self.sessions: Dict[str, List[types.Content]] = {}
-        self.last_quotes: Dict[str, Dict[str, Any]] = {}
+        self.model_candidates = ["gemini-3.5-flash-lite", "gemini-3.5-flash"]
 
-    def _get_history(self, session_id: str) -> List[types.Content]:
-        """Retrieves or initializes the conversation message history for a session."""
-        if session_id not in self.sessions:
-            self.sessions[session_id] = []
-        return self.sessions[session_id]
-
-    async def _call_gemini_with_fallback(self, contents: List[types.Content], config: types.GenerateContentConfig):
-        """Calls Gemini with automatic retry on 503 high demand spikes."""
-        last_error = None
+    async def _call_gemini_with_fallback(
+        self, contents: List[types.Content], config: types.GenerateContentConfig
+    ):
+        """Executes Gemini API calls with jittered retries on transient 503 capacity spikes."""
+        last_error: Optional[Exception] = None
         for attempt in range(3):
-            try:
-                response = await asyncio.to_thread(
-                    self.client.models.generate_content,
-                    model="gemini-3.5-flash-lite",
-                    contents=contents,
-                    config=config
-                )
-                return response
-            except Exception as e:
-                err_str = str(e).lower()
-                logger.warning(f"Attempt {attempt + 1} with gemini-3.5-flash-lite failed: {e}")
-                last_error = e
-                if "503" in err_str or "unavailable" in err_str or "high demand" in err_str:
-                    await asyncio.sleep(1.5)
+            for model_name in self.model_candidates:
+                try:
+                    return await asyncio.to_thread(
+                        self.client.models.generate_content,
+                        model=model_name,
+                        contents=contents,
+                        config=config,
+                    )
+                except Exception as e:
+                    last_error = e
+                    err_str = str(e).lower()
+                    if "503" in err_str or "unavailable" in err_str:
+                        logger.warning(f"Attempt {attempt + 1} with {model_name} hit 503 spike; retrying.")
+                        break
+                    logger.warning(f"Model {model_name} unavailable or failed: {e}")
                     continue
-                else:
-                    break
-        raise last_error
+            await asyncio.sleep(1.2 * (attempt + 1))
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("No active Gemini models responded.")
 
     async def chat(self, session_id: str, user_message: str) -> AgentResponse:
-        """
-        Processes a guest message using an autonomous multi-turn tool calling loop.
-        Allows Gemini to chain tools (e.g. search cottages -> get details -> calculate quote)
-        and synthesize a rich, accurate natural language reply with interactive UI cards.
-        """
-        history = self._get_history(session_id)
+        """Processes guest input through the bounded multi-turn ReAct tool loop."""
+        history, last_quote = session_store.get_session(session_id)
 
-        # Append new user message to session history
         user_content = types.Content(
             role="user",
-            parts=[types.Part.from_text(text=user_message)]
+            parts=[types.Part.from_text(text=user_message)],
         )
         history.append(user_content)
+        history = _trim_history(history)
 
         lower_msg = user_message.lower().strip()
-
-        # Fast Greeting (pure greetings only: short, zero queries)
-        pure_greetings = ["hi", "hello", "hey", "hu", "namaste", "pranam", "नमस्ते", "हेलो"]
-        if lower_msg in pure_greetings or (len(lower_msg.split()) <= 2 and any(lower_msg == g for g in pure_greetings)):
-            return AgentResponse(
-                text=f"Namaste! I am **Shruti**, your personal guest concierge at **{settings.COMPANY_NAME}**. 🌿✨\n\nI am delighted to assist you! I can help you explore our luxury villas, calculate stay packages, browse dining and wellness, and effortlessly book your reservation. How may I assist your visit today?"
+        pure_greetings = {"hi", "hello", "hey", "namaste", "pranam", "नमस्ते", "हेलो"}
+        if lower_msg in pure_greetings or (
+            len(lower_msg.split()) <= 2 and any(lower_msg == g for g in pure_greetings)
+        ):
+            greeting_text = (
+                f"Namaste! I am **Shruti**, your guest concierge at **{settings.COMPANY_NAME}**.\n\n"
+                "I can help you explore our villas, calculate stay quotations with taxes, review dining and wellness programs, or confirm your booking. How may I assist you today?"
             )
+            history.append(types.Content(role="model", parts=[types.Part.from_text(text=greeting_text)]))
+            session_store.save_session(session_id, _trim_history(history), last_quote)
+            return AgentResponse(text=greeting_text)
 
         config = types.GenerateContentConfig(
             system_instruction=get_system_instruction(settings.COMPANY_NAME),
@@ -233,7 +249,6 @@ class ResortAgent:
         final_text = ""
 
         try:
-            # Autonomous multi-turn reasoning and tool invocation loop (up to 4 steps)
             for step in range(4):
                 response = await self._call_gemini_with_fallback(
                     contents=history,
@@ -244,18 +259,27 @@ class ResortAgent:
                 if not candidate or not candidate.content or not candidate.content.parts:
                     break
 
-                # Check if model wants to call a tool
-                function_call_part = next((p for p in candidate.content.parts if p.function_call), None)
+                function_call_part = next(
+                    (p for p in candidate.content.parts if p.function_call), None
+                )
 
                 if function_call_part:
                     fn = function_call_part.function_call
                     fn_name = fn.name
                     fn_args = fn.args or {}
-                    logger.info(f"Step {step+1}: Agent dispatched tool [{fn_name}] with args: {fn_args}")
+                    logger.info(f"Step {step + 1}: Tool [{fn_name}] invoked for session [{session_id}]")
 
-                    # Execute tool and collect cards/action
-                    tool_result, step_cards, step_action, step_payload = await self._execute_tool(fn_name, fn_args, session_id=session_id)
+                    try:
+                        tool_result, step_cards, step_action, step_payload, updated_quote = (
+                            await self._execute_tool(fn_name, fn_args, last_quote=last_quote)
+                        )
+                    except Exception as tool_err:
+                        logger.warning(f"Tool [{fn_name}] error handed back to agent: {tool_err}")
+                        tool_result = {"error": str(tool_err)}
+                        step_cards, step_action, step_payload, updated_quote = [], None, None, None
 
+                    if updated_quote is not None:
+                        last_quote = updated_quote
                     if step_cards:
                         cards = step_cards
                     if step_action:
@@ -263,24 +287,18 @@ class ResortAgent:
                     if step_payload:
                         payload = step_payload
 
-                    # Append model's tool call to history
                     history.append(candidate.content)
-
-                    # Provide tool result back to Gemini
                     tool_response_part = types.Part.from_function_response(
                         name=fn_name,
-                        response={"result": tool_result}
+                        response={"result": tool_result},
                     )
                     history.append(types.Content(role="user", parts=[tool_response_part]))
-
                 else:
-                    # Model produced its final conversational response
                     history.append(candidate.content)
                     text_parts = [p.text for p in candidate.content.parts if p.text]
                     final_text = " ".join(text_parts).strip()
                     break
 
-            # If loop completed and final text was not synthesized, request final summary
             if not final_text:
                 summary_config = types.GenerateContentConfig(
                     system_instruction=get_system_instruction(settings.COMPANY_NAME),
@@ -293,39 +311,55 @@ class ResortAgent:
                     )
                     if summary_resp and summary_resp.text:
                         final_text = summary_resp.text.strip()
+                        history.append(
+                            types.Content(role="model", parts=[types.Part.from_text(text=final_text)])
+                        )
                 except Exception as e:
-                    logger.warning(f"Summary generation error: {e}")
+                    logger.warning(f"Summary generation fallback note: {e}")
 
         except Exception as e:
-            logger.error(f"Gemini API generation error: {e}")
+            logger.error(f"Agent execution error: {e}")
             if any(w in lower_msg for w in ["room", "villa", "cottage", "stay", "book", "cost", "price"]):
-                _, cards, action, _ = await self._execute_tool("search_cottages", {"check_in": "2026-12-01", "check_out": "2026-12-03", "guests": 2})
-                return AgentResponse(
-                    text=f"Here are the signature cottages and villas available at **{settings.COMPANY_NAME}**! You can view the rates and click to request an instant quote below:",
-                    cards=cards,
-                    action=action
+                default_in = (date.today() + timedelta(days=1)).isoformat()
+                default_out = (date.today() + timedelta(days=3)).isoformat()
+                _, cards, action, _, _ = await self._execute_tool(
+                    "search_cottages",
+                    {"check_in": default_in, "check_out": default_out, "guests": 2},
+                    last_quote=last_quote,
                 )
+                fallback_msg = (
+                    f"Here are our available villas at **{settings.COMPANY_NAME}**. "
+                    "Select any accommodation below to compute an exact quotation:"
+                )
+                session_store.save_session(session_id, _trim_history(history), last_quote)
+                return AgentResponse(text=fallback_msg, cards=cards, action=action)
+
+            session_store.save_session(session_id, _trim_history(history), last_quote)
             return AgentResponse(
-                text=f"Welcome to **{settings.COMPANY_NAME}**! How can I assist you with your booking, villa inquiry, or resort stay today?",
+                text=f"Welcome to **{settings.COMPANY_NAME}**. How can I assist you with your villa inquiry or reservation today?"
             )
 
         if not final_text:
             if action == "SHOW_ROOMS":
-                final_text = f"I found wonderful accommodations available for your dates at **{settings.COMPANY_NAME}**! Please review the options presented below:"
+                final_text = f"Here are the accommodations matching your requirements at **{settings.COMPANY_NAME}**:"
             elif action == "SHOW_QUOTE":
-                final_text = "Here is the exact price quote and breakdown for your stay:"
+                final_text = "Here is your itemized stay quotation with applicable taxes:"
             elif action == "SHOW_DINING":
-                final_text = "Here are our featured restaurant and dining offerings:"
+                final_text = "Here are our signature dining selections:"
             else:
-                final_text = f"Welcome to **{settings.COMPANY_NAME}**! How may I assist your stay today?"
+                final_text = f"Welcome to **{settings.COMPANY_NAME}**. How may I assist your stay today?"
 
+        session_store.save_session(session_id, _trim_history(history), last_quote)
         return AgentResponse(text=final_text, cards=cards, action=action, payload=payload)
 
-    async def _execute_tool(self, name: str, args: Dict[str, Any], session_id: str = ""):
-        """Executes backend or pricing tools and produces corresponding interactive UI cards."""
+    async def _execute_tool(
+        self, name: str, args: Dict[str, Any], last_quote: Optional[Dict[str, Any]] = None
+    ):
+        """Dispatches tool handlers, builds UI cards, and prunes bloated LLM context payloads."""
         cards: List[Dict[str, Any]] = []
         action: Optional[str] = None
         payload: Optional[Dict[str, Any]] = None
+        updated_quote: Optional[Dict[str, Any]] = None
 
         if name == "search_cottages":
             check_in = str(args.get("check_in", ""))
@@ -333,13 +367,11 @@ class ResortAgent:
             guests = int(args.get("guests") or 2)
 
             all_cottages = await resort_client.get_cottages()
-            filtered_cottages = [c for c in all_cottages if int(c.get("capacity_max") or c.get("capacity") or 2) >= guests]
+            filtered = [
+                c for c in all_cottages if int(c.get("capacity_max") or c.get("capacity") or 2) >= guests
+            ] or all_cottages
 
-            # If guest count is large and no single cottage fits, showcase all available villas
-            if not filtered_cottages:
-                filtered_cottages = all_cottages
-
-            for c in filtered_cottages:
+            for c in filtered:
                 max_capacity = int(c.get("capacity_max") or c.get("capacity") or c.get("guests") or 2)
                 cards.append({
                     "type": "cottage_card",
@@ -355,26 +387,36 @@ class ResortAgent:
                 })
 
             action = "SHOW_ROOMS"
+            # Prune large image arrays & truncated descriptions before feeding to Gemini
             tool_result = {
-                "count": len(filtered_cottages),
+                "count": len(filtered),
+                "dates": f"{check_in} to {check_out}",
                 "cottages": [
                     {
-                        "id": c.get("id") or c.get("_id"),
+                        "id": str(c.get("id") or c.get("_id") or ""),
                         "name": c.get("name"),
                         "price_per_night": c.get("price_per_night"),
                         "capacity": c.get("capacity_max") or c.get("capacity") or 2,
-                        "description": c.get("description", "")
+                        "summary": str(c.get("description", ""))[:220],
                     }
-                    for c in filtered_cottages
+                    for c in filtered
                 ],
-                "dates": f"{check_in} to {check_out}"
             }
-            return tool_result, cards, action, payload
+            return tool_result, cards, action, payload, updated_quote
 
         elif name == "get_cottage_details":
             cottage_id = str(args.get("cottage_id", "")).strip()
             details = await resort_client.get_cottage_details(cottage_id)
-            return details, cards, action, payload
+            pruned_details = {
+                "id": str(details.get("id") or details.get("_id") or cottage_id),
+                "name": details.get("name"),
+                "price_per_night": details.get("price_per_night") or details.get("price"),
+                "capacity": details.get("capacity_max") or details.get("capacity"),
+                "extra_bedding_price": details.get("extra_bedding_price", 1500),
+                "amenities": details.get("amenities", [])[:8],
+                "summary": str(details.get("description", ""))[:300],
+            }
+            return pruned_details, cards, action, payload, updated_quote
 
         elif name == "get_resort_services":
             category = str(args.get("category", "dining")).lower()
@@ -382,7 +424,7 @@ class ResortAgent:
 
             if "dining" in category or "food" in category:
                 dining_menu = await resort_client.get_dining_menu()
-                for item in dining_menu[:6]:  # Showcase top 6 items
+                for item in dining_menu[:6]:
                     cards.append({
                         "type": "dining_card",
                         "id": str(item.get("id") or ""),
@@ -392,12 +434,12 @@ class ResortAgent:
                         "description": item.get("description", ""),
                         "dietary": item.get("dietary", "Veg"),
                     })
-                items = dining_menu
+                items = [{"name": i.get("name"), "price": i.get("price"), "dietary": i.get("dietary")} for i in dining_menu[:10]]
                 action = "SHOW_DINING"
 
             elif "wellness" in category or "spa" in category:
-                wellness_programs = await resort_client.get_wellness_programs()
-                for prog in wellness_programs:
+                wellness = await resort_client.get_wellness_programs()
+                for prog in wellness:
                     cards.append({
                         "type": "wellness_card",
                         "id": str(prog.get("id") or ""),
@@ -406,7 +448,7 @@ class ResortAgent:
                         "duration": prog.get("duration", "60 mins"),
                         "description": prog.get("description", ""),
                     })
-                items = wellness_programs
+                items = [{"name": w.get("name") or w.get("title"), "price": w.get("price")} for w in wellness[:10]]
                 action = "SHOW_WELLNESS"
 
             else:
@@ -419,15 +461,19 @@ class ResortAgent:
                         "price": float(exp.get("price") or 0.0),
                         "description": exp.get("description", ""),
                     })
-                items = experiences
+                items = [{"name": e.get("title") or e.get("name"), "price": e.get("price")} for e in experiences[:10]]
                 action = "SHOW_EXPERIENCES"
 
-            return {"category": category, "count": len(items)}, cards, action, payload
+            return {"category": category, "items": items}, cards, action, payload, updated_quote
 
         elif name == "calculate_booking_quote":
-            cottage_id = str(args.get("cottage_id"))
-            check_in = str(args.get("check_in"))
-            check_out = str(args.get("check_out"))
+            cottage_id = str(args.get("cottage_id") or "").strip()
+            if not cottage_id or cottage_id.lower() in ("none", "null"):
+                return {
+                    "error": "Missing or invalid cottage_id. Use the exact `id` string returned by search_cottages."
+                }, cards, action, payload, updated_quote
+            check_in = str(args.get("check_in") or "").strip()
+            check_out = str(args.get("check_out") or "").strip()
             adults = int(args.get("adults") or 2)
             children = int(args.get("children") or 0)
             extra_beds = int(args.get("extra_beds") or 0)
@@ -447,45 +493,61 @@ class ResortAgent:
             action = "SHOW_QUOTE"
             payload = quote.model_dump()
             whatsapp_url = notification_service.generate_whatsapp_link(payload)
-            mailto_url = notification_service.generate_mailto_link(payload)
             payload["whatsapp_url"] = whatsapp_url
-            payload["mailto_url"] = mailto_url
-            if session_id:
-                self.last_quotes[session_id] = payload
+            updated_quote = payload
 
             cards.append({
                 "type": "quote_card",
                 "quote": payload,
                 "whatsapp_url": whatsapp_url,
             })
-            return payload, cards, action, payload
+            return payload, cards, action, payload, updated_quote
 
         elif name == "send_whatsapp_quote":
             phone = str(args.get("phone_number", "")).strip()
-            quote_data = self.last_quotes.get(session_id) or {
-                "cottage_name": "Mud & Meadows Luxury Villa",
-                "nights": 2,
-                "check_in": "Upcoming Stay",
-                "check_out": "",
-                "adults": 2,
-                "base_price": 24000.0,
-                "gst_amount": 4320.0,
-                "total_price": 28320.0
-            }
+            quote_data = last_quote
+            if not quote_data:
+                return {
+                    "status": "no_quote",
+                    "message": "No active stay quote exists in this session yet. Calculate a stay quote first before generating a WhatsApp dispatch."
+                }, cards, action, payload, updated_quote
+
             wa_url = notification_service.generate_whatsapp_link(quote_data, guest_phone=phone)
             cards.append({
                 "type": "whatsapp_card",
                 "phone": phone,
                 "whatsapp_url": wa_url,
                 "cottage_name": quote_data.get("cottage_name", "Luxury Villa"),
-                "total_price": quote_data.get("total_price", 0.0)
+                "total_price": quote_data.get("grand_total") or quote_data.get("total_price") or 0.0,
             })
-            return {"status": "success", "phone": phone, "whatsapp_url": wa_url}, cards, "SHOW_WHATSAPP", payload
+            return {"status": "success", "phone": phone, "whatsapp_url": wa_url}, cards, "SHOW_WHATSAPP", payload, updated_quote
 
         elif name == "lookup_guest_booking":
             email = str(args.get("email", "")).strip()
+            token = str(args.get("verification_token", "")).strip()
+            if not email or not token:
+                return {
+                    "status": "verification_required",
+                    "message": "Guest privacy requires BOTH email and either Booking ID or last 4 phone digits."
+                }, cards, action, payload, updated_quote
+
             bookings = await resort_client.lookup_guest_bookings(email)
+            verified_bookings = []
+            norm_token = token.lower().lstrip("#")
+
             for b in bookings:
+                b_id = str(b.get("id") or b.get("_id") or b.get("booking_reference") or "").lower().lstrip("#")
+                b_phone = "".join(filter(str.isdigit, str(b.get("guest_phone") or b.get("phone") or "")))
+                if (b_id and norm_token == b_id) or (len(b_phone) >= 4 and token.endswith(b_phone[-4:])):
+                    verified_bookings.append(b)
+
+            if not verified_bookings:
+                return {
+                    "status": "verification_failed",
+                    "message": "No reservation matched both the email address and provided verification code/phone digits."
+                }, cards, action, payload, updated_quote
+
+            for b in verified_bookings:
                 cards.append({
                     "type": "booking_status_card",
                     "booking_id": str(b.get("id") or b.get("_id") or ""),
@@ -495,10 +557,9 @@ class ResortAgent:
                     "total_price": b.get("total_price", 0.0),
                 })
             action = "SHOW_BOOKINGS"
-            return {"bookings_found": len(bookings)}, cards, action, payload
+            return {"bookings_found": len(verified_bookings)}, cards, action, payload, updated_quote
 
-        return {"error": f"Unknown tool: {name}"}, cards, action, payload
+        return {"error": f"Unknown tool: {name}"}, cards, action, payload, updated_quote
 
 
-# Singleton instance of the agent
 agent = ResortAgent()

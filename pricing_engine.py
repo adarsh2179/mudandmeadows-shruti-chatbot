@@ -1,22 +1,36 @@
 """
 Pricing Engine Module for Mud & Meadows AI Concierge.
 
-Enforces deterministic financial arithmetic for booking calculations.
-Prevents LLM math hallucinations regarding room rates, extra beds,
-taxes (GST), and promotional coupon discounts.
+Enforces deterministic financial arithmetic using Decimal precision (ROUND_HALF_UP)
+for booking calculations. Eliminates floating-point rounding drift and LLM arithmetic
+hallucinations across nights, extra beds, promotional coupons, and Indian GST slabs.
 """
 
-from datetime import date, datetime
+from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
+
 from resort_client import resort_client
+
+TWO_PLACES = Decimal("0.01")
+
+
+def _to_decimal(val: Any) -> Decimal:
+    """Converts numeric input to Decimal via string representation to avoid binary float noise."""
+    return Decimal(str(val or 0))
+
+
+def _round_currency(val: Decimal) -> float:
+    """Rounds a Decimal monetary amount using financial half-up rounding to 2 decimal places."""
+    return float(val.quantize(TWO_PLACES, rounding=ROUND_HALF_UP))
 
 
 class AddOnItem(BaseModel):
     """An optional service added to the stay (dining, spa, experience)."""
     id: str
     name: str
-    category: str = "general"  # 'wellness', 'dining', 'experience'
+    category: str = "general"
     price: float = Field(ge=0.0, description="Price in INR")
     quantity: int = Field(default=1, ge=1)
 
@@ -48,13 +62,13 @@ class PriceQuote(BaseModel):
 
 
 class PricingEngine:
-    """Deterministic calculator for resort stay quotes and invoices."""
+    """Deterministic financial calculator for resort stay quotes and invoices."""
 
     @staticmethod
     def parse_and_validate_dates(check_in_str: str, check_out_str: str) -> int:
         """
-        Validates check-in and check-out date formats and chronological order.
-        Returns the number of nights.
+        Validates check-in and check-out ISO dates and chronological order.
+        Returns the integer number of nights.
         """
         try:
             check_in = datetime.strptime(check_in_str.strip(), "%Y-%m-%d").date()
@@ -69,17 +83,16 @@ class PricingEngine:
                 f"Check-out date ({check_out_str}) must be after check-in date ({check_in_str})."
             )
 
-        nights = (check_out - check_in).days
-        return nights
+        return (check_out - check_in).days
 
     @staticmethod
-    def get_applicable_gst_percent(price_per_night: float) -> float:
+    def get_applicable_gst_percent(price_per_night: Decimal) -> Decimal:
         """
-        Calculates Indian Hotel GST rate based on standard government slabs:
-        - Room tariff < Rs. 7,500/night: 12% GST
-        - Room tariff >= Rs. 7,500/night: 18% GST
+        Calculates statutory Indian hotel GST rate based on CBIC tariff brackets:
+        - Room tariff <= Rs. 7,500/night: 12% GST
+        - Room tariff >  Rs. 7,500/night: 18% GST
         """
-        return 18.0 if price_per_night >= 7500.0 else 12.0
+        return Decimal("18.0") if price_per_night > Decimal("7500.00") else Decimal("12.0")
 
     async def calculate_quote(
         self,
@@ -93,61 +106,56 @@ class PricingEngine:
         add_ons: Optional[List[AddOnItem]] = None,
     ) -> PriceQuote:
         """
-        Generates an exact, auditable PriceQuote.
-        Executes strict arithmetic with zero reliance on LLM calculations.
+        Generates an exact, auditable PriceQuote using Decimal arithmetic.
         """
-        # 1. Validate nights
         nights = self.parse_and_validate_dates(check_in_str, check_out_str)
+        nights_dec = Decimal(nights)
 
-        # 2. Extract Cottage Specs
         cottage_id = str(cottage.get("id") or cottage.get("_id") or "")
         cottage_name = cottage.get("name", "Resort Cottage")
-        price_per_night = float(
+        price_per_night = _to_decimal(
             cottage.get("price_per_night")
             or cottage.get("price")
             or cottage.get("offer_price")
-            or 0.0
+            or 0
         )
-        extra_bed_unit_price = float(cottage.get("extra_bedding_price") or 1500.0)
+        extra_bed_unit_price = _to_decimal(cottage.get("extra_bedding_price") or 1500)
 
-        # 3. Base Rent & Bedding
-        base_room_rent = round(price_per_night * nights, 2)
-        extra_bed_total = round(extra_beds * extra_bed_unit_price * nights, 2)
+        base_room_rent = price_per_night * nights_dec
+        extra_bed_total = Decimal(max(0, extra_beds)) * extra_bed_unit_price * nights_dec
 
-        # 4. Add-ons (Spa, Dining, Experiences)
         selected_add_ons = add_ons or []
-        add_ons_total = round(
-            sum(item.price * item.quantity for item in selected_add_ons), 2
+        add_ons_total = sum(
+            (_to_decimal(item.price) * Decimal(item.quantity) for item in selected_add_ons),
+            Decimal("0.00"),
         )
 
-        subtotal = round(base_room_rent + extra_bed_total + add_ons_total, 2)
+        subtotal = base_room_rent + extra_bed_total + add_ons_total
 
-        # 5. Promotional Coupon Calculation (calling Resort API)
-        coupon_discount = 0.0
+        coupon_discount = Decimal("0.00")
         coupon_valid = False
         clean_coupon = coupon_code.strip().upper() if coupon_code else None
 
         if clean_coupon:
             try:
-                quote_resp = await resort_client.quote_coupon(clean_coupon, subtotal)
-                # Resort API returns discount amount or percentage
+                quote_resp = await resort_client.quote_coupon(clean_coupon, _round_currency(subtotal))
                 if quote_resp and "discount" in quote_resp:
-                    coupon_discount = round(float(quote_resp["discount"]), 2)
+                    coupon_discount = _to_decimal(quote_resp["discount"])
                     coupon_valid = True
                 elif quote_resp and "discount_amount" in quote_resp:
-                    coupon_discount = round(float(quote_resp["discount_amount"]), 2)
+                    coupon_discount = _to_decimal(quote_resp["discount_amount"])
                     coupon_valid = True
             except Exception:
-                # If coupon is invalid or expired on backend, discount remains 0
                 coupon_valid = False
-                coupon_discount = 0.0
+                coupon_discount = Decimal("0.00")
 
-        taxable_amount = max(0.0, round(subtotal - coupon_discount, 2))
+        taxable_amount = max(Decimal("0.00"), subtotal - coupon_discount)
 
-        # 6. GST Calculation
         gst_percent = self.get_applicable_gst_percent(price_per_night)
-        gst_amount = round(taxable_amount * (gst_percent / 100.0), 2)
-        grand_total = round(taxable_amount + gst_amount, 2)
+        gst_amount = (taxable_amount * gst_percent / Decimal("100")).quantize(
+            TWO_PLACES, rounding=ROUND_HALF_UP
+        )
+        grand_total = taxable_amount + gst_amount
 
         return PriceQuote(
             cottage_id=cottage_id,
@@ -158,22 +166,21 @@ class PricingEngine:
             adults=adults,
             children=children,
             extra_beds=extra_beds,
-            price_per_night=price_per_night,
-            base_room_rent=base_room_rent,
-            extra_bed_total=extra_bed_total,
+            price_per_night=_round_currency(price_per_night),
+            base_room_rent=_round_currency(base_room_rent),
+            extra_bed_total=_round_currency(extra_bed_total),
             add_ons=selected_add_ons,
-            add_ons_total=add_ons_total,
-            subtotal_before_discount=subtotal,
+            add_ons_total=_round_currency(add_ons_total),
+            subtotal_before_discount=_round_currency(subtotal),
             coupon_code=clean_coupon if coupon_valid else None,
-            coupon_discount=coupon_discount,
+            coupon_discount=_round_currency(coupon_discount),
             coupon_valid=coupon_valid,
-            taxable_amount=taxable_amount,
-            gst_percent=gst_percent,
-            gst_amount=gst_amount,
-            grand_total=grand_total,
+            taxable_amount=_round_currency(taxable_amount),
+            gst_percent=float(gst_percent),
+            gst_amount=_round_currency(gst_amount),
+            grand_total=_round_currency(grand_total),
             currency="INR",
         )
 
 
-# Singleton instance for application-wide use
 pricing_engine = PricingEngine()

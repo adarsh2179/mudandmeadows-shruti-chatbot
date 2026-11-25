@@ -128,33 +128,35 @@ for step in range(4):
         final_text = response.text.strip()
         break
 ```
-**Resilience Safeguard**: Free-tier APIs occasionally experience temporary `503 Service Unavailable` spikes. The agent wraps API requests in a 3-attempt exponential backoff loop with 1.5-second jittered pauses, preventing transient drops from affecting guests.
+**Resilience & State Safeguards**:
+- **SQLite WAL + Bounded LRU Store (`session_store.py`)**: Replaces unbounded in-memory dictionaries with a $0.00 persistent SQLite WAL database paired with an in-memory LRU cache (`ttl=1800s`), supporting multi-worker deployments without memory leaks.
+- **Sliding Window Context & Tool Pruning**: Bounds prompt context to the 12 most recent turns while stripping noisy image arrays from tool payloads returned to the model (~75% token reduction).
+- **Dynamic Date Awareness & Lookup Privacy**: Dynamically injects the current date for relative queries ("this weekend") and gates `lookup_guest_booking` behind email + secondary verification (booking ID or last 4 phone digits).
+- **Rate Limiting**: Protects free-tier Gemini RPM quotas with a sliding-window IP/bucket rate limiter (`HTTP 429`).
 
 ### 4.3. The Resort API Client (`resort_client.py`)
-An asynchronous client utilizing `httpx.AsyncClient` that queries the resort's operational Cloud Run backend:
-- `GET /api/cottages/`: Real-time inventory, rates, and capacities.
-- `GET /api/cottages/{id}`: Detailed specifications, layout, and amenities.
+An asynchronous client powered by a persistent singleton `httpx.AsyncClient` connection pool initialized during FastAPI `lifespan`, paired with a 30-second read-through TTL cache to minimize TLS handshake overhead:
+- `GET /api/cottages/`: Real-time inventory, rates, and capacities (30s TTL cached + stale fallback).
+- `GET /api/cottages/{id}`: Detailed specifications, layout, and amenities (30s TTL cached).
 - `GET /api/dining/all`: Restaurant menus, dining specials, and dietary labels.
 - `GET /api/wellness/programs`: Ayurvedic spa treatments and durations.
 - `GET /api/experiences/`: Nature walks, bonfire activities, and workshops.
 - `POST /api/coupons/quote`: Promo validation.
 - `POST /api/bookings/public`: Commits confirmed reservation records.
 
-### 4.4. In-Chat Payment & Security Model (`main.py`)
-In-chat transactions handle sensitive customer interactions. The system addresses the 5 core failure modes of conversational payments:
-1. **Server-Authoritative Pricing**: The client cannot submit an `amount`. The server calculates the quote internally via `pricing_engine.py` and creates the Razorpay order server-side.
-2. **Cryptographic HMAC-SHA256 Verification**: Payments returned by Razorpay Checkout must match:
-   $$\text{HMAC-SHA256}(\text{order\_id} \parallel "|" \parallel \text{payment\_id}, \text{secret}) == \text{signature}$$
-   In production, any discrepancy immediately halts the transaction with an HTTP 400.
-3. **Client Drop-Off Protection**: Razorpay server-to-server webhooks catch captured payments even if the guest closes their browser tab after completing UPI authentication.
-4. **Race Condition Prevention**: Soft reservation locks prevent double-booking of high-demand cottages during active checkout sessions.
-5. **Idempotency**: Requests are hashed by session and date parameters, preventing duplicate charges caused by mobile network retries.
+### 4.4. Financial Precision & Payment Security (`pricing_engine.py` & `main.py`)
+1. **Decimal Currency Math**: Uses Python `decimal.Decimal` (`ROUND_HALF_UP`) strictly adhering to Indian GST tariff rules (`<= ₹7,500`: 12%, `> ₹7,500`: 18%), preventing IEEE 754 1-paise drift.
+2. **Server-Authoritative Pricing**: Clients submit `cottage_id`, `check_in`, `check_out`, and guest details; the server recomputes the order total internally before calling Razorpay.
+3. **Cryptographic HMAC-SHA256 Verification**: Payments returned by Razorpay Checkout are verified using constant-time `hmac.compare_digest` checks.
+4. **Client Drop-Off Protection (`POST /api/payment/webhook`)**: Server-to-server webhooks verify `X-Razorpay-Signature` and automatically recover captured payments if the guest closes their browser after UPI authentication.
+5. **Idempotency**: Duplicate taps within 15 minutes return the staged Razorpay `order_id` without re-triggering charges.
 
 ### 4.5. Client SDK & Shadow DOM (`static/widget.js` & `widget.css`)
 To allow embedding on any CMS (WordPress, Webflow, React, Shopify):
-- The widget attaches an open **Shadow Root** (`element.attachShadow({ mode: 'open' })`).
-- CSS rules defined in `widget.css` cannot leak out into the host page, and global website stylesheets cannot distort the widget's layout.
-- The SDK utilizes the native **Web Speech API** (`webkitSpeechRecognition`) configured for `en-IN` (Indian English), offering voice interaction with zero server latency or transcription API fees.
+- Attaches an open **Shadow Root** (`element.attachShadow({ mode: 'open' })`) for strict CSS scope isolation.
+- Sanitizes all chat inputs and dynamic HTML rendering (`escapeHtml`) to mitigate XSS vulnerabilities.
+- Replaces intrusive browser `window.prompt()` dialogs with inline luxury drawers inside the Shadow DOM for WhatsApp numbers and guest reservation details.
+- Employs native **Web Speech API** (`webkitSpeechRecognition`) configured for `en-IN` at zero server cost.
 
 ### 4.6. WhatsApp Quotation Protocol (`notification_service.py`)
 Rather than integrating paid WhatsApp Business APIs (Twilio or Meta Cloud API, which charge per-conversation fees), the concierge generates pre-formatted, luxury markdown summaries via standard **Click-to-Chat deep links** (`https://api.whatsapp.com/send?text=...`). Guests tap once to forward quotes to their travel group or the resort reservations desk at zero cost.

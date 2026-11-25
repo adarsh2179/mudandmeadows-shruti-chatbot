@@ -1,25 +1,21 @@
 /**
  * Mud & Meadows Resort AI Concierge - Embeddable Widget SDK
- * Encapsulated via Shadow DOM for 100% CSS & JavaScript isolation.
+ * Encapsulated via Shadow DOM for strict CSS/DOM isolation and XSS safety.
  */
 
 (function () {
-  // Prevent duplicate initialization
   if (window.MudAndMeadowsChatWidgetInitialized) return;
   window.MudAndMeadowsChatWidgetInitialized = true;
 
-  // Determine API base URL from script tag or current origin
   const scriptTag = document.currentScript || document.querySelector('script[data-resort-id]');
   const API_BASE = (scriptTag && scriptTag.getAttribute('data-api-base')) || window.location.origin;
 
-  // Session ID stored in sessionStorage for conversation continuity
   let sessionId = sessionStorage.getItem('mm_chat_session_id');
   if (!sessionId) {
     sessionId = 'session_' + Math.random().toString(36).substring(2, 11);
     sessionStorage.setItem('mm_chat_session_id', sessionId);
   }
 
-  // Inject Razorpay Checkout SDK dynamically on parent document
   if (!window.Razorpay) {
     const rzpScript = document.createElement('script');
     rzpScript.src = 'https://checkout.razorpay.com/v1/checkout.js';
@@ -27,32 +23,26 @@
     document.head.appendChild(rzpScript);
   }
 
-  // Create Host Container for Shadow DOM
   const hostElement = document.createElement('div');
   hostElement.id = 'mud-and-meadows-widget-root';
   document.body.appendChild(hostElement);
 
   const shadow = hostElement.attachShadow({ mode: 'open' });
 
-  // Load Widget Styles inside Shadow Root
   const link = document.createElement('link');
   link.rel = 'stylesheet';
   link.href = `${API_BASE}/static/widget.css`;
   shadow.appendChild(link);
 
-  // Widget HTML Structure
   const container = document.createElement('div');
   container.innerHTML = `
-    <!-- Launcher Button -->
     <button class="chat-launcher" id="launcherBtn" title="Chat with Mud & Meadows Concierge">
       <svg viewBox="0 0 24 24">
         <path d="M12 2C6.477 2 2 6.477 2 12c0 1.821.487 3.53 1.338 5L2.5 21.5l4.632-.821C8.583 21.493 10.244 22 12 22c5.523 0 10-4.477 10-10S17.523 2 12 2zm0 18c-1.543 0-2.99-.413-4.24-1.135l-.304-.175-3.084.546.556-2.984-.19-.318C4.053 14.73 3.6 13.407 3.6 12c0-4.632 3.768-8.4 8.4-8.4s8.4 3.768 8.4 8.4-3.768 8.4-8.4 8.4z"/>
       </svg>
     </button>
 
-    <!-- Chat Window -->
     <div class="chat-window hidden" id="chatWindow">
-      <!-- Header -->
       <div class="chat-header">
         <div class="chat-header-info">
           <div class="chat-avatar">S</div>
@@ -69,17 +59,15 @@
         </button>
       </div>
 
-      <!-- Messages Area -->
       <div class="chat-messages" id="messagesContainer">
         <div class="message bot">
-          Namaste! I am <strong>Shruti</strong>, your personal guest concierge at <strong>Mud & Meadows Luxury Resort</strong>. 🌿<br><br>
-          I am here to assist you with our luxury villas, calculate stay packages, arrange organic dining and spa treatments, and help you reserve your room. You can type or tap the microphone to speak with me in <strong>Hindi, English, or your regional language</strong>!
+          Namaste! I am <strong>Shruti</strong>, your personal guest concierge at <strong>Mud &amp; Meadows Luxury Resort</strong>.<br><br>
+          I can assist you with live villa availability, exact stay quotations with taxes, dining menus, and instant room reservations. Type or tap the microphone to speak in <strong>English or Hindi</strong>.
         </div>
       </div>
 
-      <!-- Footer / Input -->
       <div class="chat-footer">
-        <button class="chat-btn voice-btn" id="voiceBtn" title="Hold/Tap to Speak (Hindi, Bhojpuri, Kannada, etc.)">
+        <button class="chat-btn voice-btn" id="voiceBtn" title="Tap to Speak">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
             <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
@@ -99,7 +87,6 @@
   `;
   shadow.appendChild(container);
 
-  // DOM Elements inside Shadow Root
   const launcherBtn = shadow.getElementById('launcherBtn');
   const chatWindow = shadow.getElementById('chatWindow');
   const closeBtn = shadow.getElementById('closeBtn');
@@ -108,21 +95,58 @@
   const sendBtn = shadow.getElementById('sendBtn');
   const voiceBtn = shadow.getElementById('voiceBtn');
 
-  // Toggle Window Visibility
   launcherBtn.addEventListener('click', () => chatWindow.classList.toggle('hidden'));
   closeBtn.addEventListener('click', () => chatWindow.classList.add('hidden'));
 
-  // Append Message Helper
-  function appendMessage(text, sender = 'bot') {
+  // XSS-safe HTML escaper and lightweight markdown renderer
+  function escapeHtml(unsafe) {
+    return String(unsafe || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function formatSafeBotHtml(text) {
+    return escapeHtml(text)
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\n/g, '<br>');
+  }
+
+  function appendMessage(text, sender = 'bot', isSafePreformattedHtml = false) {
     const msg = document.createElement('div');
     msg.className = `message ${sender}`;
-    msg.innerHTML = text.replace(/\n/g, '<br>');
+    if (sender === 'user') {
+      msg.textContent = text;
+    } else if (isSafePreformattedHtml) {
+      msg.innerHTML = text;
+    } else {
+      msg.innerHTML = formatSafeBotHtml(text);
+    }
     messagesContainer.appendChild(msg);
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
     return msg;
   }
 
-  // Render Interactive UI Cards
+  function buildWhatsAppShareUrl(q, phoneDigits) {
+    const lines = [
+      '*Mud & Meadows Resort - Stay Quotation*',
+      '',
+      `*Villa:* ${q.cottage_name}`,
+      `*Dates:* ${q.check_in} to ${q.check_out} (${q.nights} Nights)`,
+      `*Guests:* ${q.adults} Adults`,
+      `*Total (incl. GST):* INR ${Number(q.grand_total).toLocaleString()}`,
+      '',
+      'Please confirm my reservation details.',
+    ].join('\n');
+    const encoded = encodeURIComponent(lines);
+    if (phoneDigits) {
+      return `https://api.whatsapp.com/send?phone=${encodeURIComponent(phoneDigits)}&text=${encoded}`;
+    }
+    return `https://api.whatsapp.com/send?text=${encoded}`;
+  }
+
   function renderCards(cards) {
     if (!cards || !cards.length) return;
 
@@ -134,14 +158,16 @@
         const cCard = document.createElement('div');
         cCard.className = 'cottage-card';
         const imgUrl = (card.images && card.images[0]) || 'https://images.unsplash.com/photo-1566073771259-6a8506099945?w=500';
+        const safeName = escapeHtml(card.name);
+        const safeAmenities = escapeHtml((card.amenities || []).slice(0, 3).join(', '));
         cCard.innerHTML = `
-          <img src="${imgUrl}" class="cottage-card-img" alt="${card.name}" onerror="this.src='https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?w=500'"/>
+          <img src="${escapeHtml(imgUrl)}" class="cottage-card-img" alt="${safeName}" onerror="this.src='https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?w=500'"/>
           <div class="cottage-card-body">
-            <div class="cottage-card-title">${card.name}</div>
-            <div class="cottage-card-price">₹${card.price_per_night.toLocaleString()} / night</div>
-            <div class="cottage-card-meta">👥 Max ${card.capacity} Guests • 🌿 ${card.amenities.slice(0, 3).join(', ')}</div>
-            <button class="card-action-btn select-cottage-btn" data-id="${card.id}" data-name="${card.name}">
-              Select & Get Exact Quote
+            <div class="cottage-card-title">${safeName}</div>
+            <div class="cottage-card-price">₹${Number(card.price_per_night).toLocaleString()} / night</div>
+            <div class="cottage-card-meta">Max ${Number(card.capacity)} Guests • ${safeAmenities}</div>
+            <button class="card-action-btn select-cottage-btn">
+              Select &amp; Get Exact Quote
             </button>
           </div>
         `;
@@ -154,43 +180,98 @@
         const q = card.quote;
         const qCard = document.createElement('div');
         qCard.className = 'quote-card';
-        const waLink = card.whatsapp_url || q.whatsapp_url || `https://api.whatsapp.com/send?text=Stay%20Quotation%20for%20${encodeURIComponent(q.cottage_name)}`;
-        const mailtoLink = card.mailto_url || q.mailto_url || `mailto:?subject=Mud%20and%20Meadows%20Quote&body=Stay%20Quotation%20for%20${encodeURIComponent(q.cottage_name)}`;
+        const defaultWaLink = card.whatsapp_url || q.whatsapp_url || buildWhatsAppShareUrl(q, '');
 
         qCard.innerHTML = `
-          <div class="quote-header">Stay Summary: ${q.cottage_name}</div>
-          <div class="quote-row"><span>Dates:</span> <span>${q.check_in} to ${q.check_out} (${q.nights} Nights)</span></div>
-          <div class="quote-row"><span>Guests:</span> <span>${q.adults} Adults, ${q.children} Children</span></div>
-          <div class="quote-row"><span>Room Rent:</span> <span>₹${q.base_room_rent.toLocaleString()}</span></div>
-          ${q.extra_bed_total > 0 ? `<div class="quote-row"><span>Extra Bedding:</span> <span>₹${q.extra_bed_total.toLocaleString()}</span></div>` : ''}
-          ${q.coupon_discount > 0 ? `<div class="quote-row" style="color:#10b981;"><span>Coupon Discount:</span> <span>-₹${q.coupon_discount.toLocaleString()}</span></div>` : ''}
-          <div class="quote-row"><span>GST (${q.gst_percent}%):</span> <span>₹${q.gst_amount.toLocaleString()}</span></div>
-          <div class="quote-row total"><span>Grand Total:</span> <span>₹${q.grand_total.toLocaleString()}</span></div>
+          <div class="quote-header">Stay Summary: ${escapeHtml(q.cottage_name)}</div>
+          <div class="quote-row"><span>Dates:</span> <span>${escapeHtml(q.check_in)} to ${escapeHtml(q.check_out)} (${Number(q.nights)} Nights)</span></div>
+          <div class="quote-row"><span>Guests:</span> <span>${Number(q.adults)} Adults, ${Number(q.children)} Children</span></div>
+          <div class="quote-row"><span>Room Rent:</span> <span>₹${Number(q.base_room_rent).toLocaleString()}</span></div>
+          ${q.extra_bed_total > 0 ? `<div class="quote-row"><span>Extra Bedding:</span> <span>₹${Number(q.extra_bed_total).toLocaleString()}</span></div>` : ''}
+          ${q.coupon_discount > 0 ? `<div class="quote-row" style="color:#10b981;"><span>Coupon Discount:</span> <span>-₹${Number(q.coupon_discount).toLocaleString()}</span></div>` : ''}
+          <div class="quote-row"><span>GST (${Number(q.gst_percent)}%):</span> <span>₹${Number(q.gst_amount).toLocaleString()}</span></div>
+          <div class="quote-row total"><span>Grand Total:</span> <span>₹${Number(q.grand_total).toLocaleString()}</span></div>
           
           <div class="quote-actions">
-            <button class="wa-btn" id="waBtn_${q.cottage_id}" title="Send or share quote on WhatsApp">
-              <span>📲</span> Send Quote on WhatsApp
-            </button>
-            <button class="reserve-btn" id="payBtn_${q.cottage_id}" title="Reserve and pay online">
-              <span>💳</span> Reserve Villa Online
-            </button>
+            <button class="wa-btn">Send Quote on WhatsApp</button>
+            <button class="reserve-btn">Reserve Villa Online</button>
+          </div>
+
+          <!-- Inline WhatsApp Drawer (no window.prompt) -->
+          <div class="inline-drawer wa-drawer hidden">
+            <label>WhatsApp Mobile Number (Optional)</label>
+            <input type="tel" class="wa-phone-input" placeholder="10-digit number (leave blank to pick chat)"/>
+            <div class="inline-drawer-actions">
+              <button class="inline-submit-btn wa-theme wa-confirm-btn">Open WhatsApp</button>
+              <button class="inline-cancel-btn wa-cancel-btn">Cancel</button>
+            </div>
+          </div>
+
+          <!-- Inline Checkout Guest Details Drawer -->
+          <div class="inline-drawer checkout-drawer hidden">
+            <label>Guest Details for Reservation</label>
+            <input type="text" class="guest-name-input" placeholder="Full Name (e.g. Adarsh Tiwari)" required/>
+            <input type="email" class="guest-email-input" placeholder="Email for Voucher" required/>
+            <input type="tel" class="guest-phone-input" placeholder="10-digit Mobile Number" required/>
+            <div class="inline-drawer-actions">
+              <button class="inline-submit-btn checkout-confirm-btn">Pay ₹${Number(q.grand_total).toLocaleString()}</button>
+              <button class="inline-cancel-btn checkout-cancel-btn">Cancel</button>
+            </div>
           </div>
         `;
 
+        const waDrawer = qCard.querySelector('.wa-drawer');
+        const checkoutDrawer = qCard.querySelector('.checkout-drawer');
+
         qCard.querySelector('.wa-btn').addEventListener('click', () => {
-          const userPhone = prompt("Enter your 10-digit mobile number for WhatsApp (or leave blank to open WhatsApp directly):");
-          let targetWa = waLink;
-          if (userPhone && userPhone.trim()) {
-            const cleanDigits = userPhone.replace(/\D/g, '');
+          checkoutDrawer.classList.add('hidden');
+          waDrawer.classList.toggle('hidden');
+          messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        });
+
+        qCard.querySelector('.wa-cancel-btn').addEventListener('click', () => {
+          waDrawer.classList.add('hidden');
+        });
+
+        qCard.querySelector('.wa-confirm-btn').addEventListener('click', () => {
+          const rawPhone = qCard.querySelector('.wa-phone-input').value.trim();
+          let targetWa = defaultWaLink;
+          if (rawPhone) {
+            const cleanDigits = rawPhone.replace(/\D/g, '');
             const finalDigits = cleanDigits.length === 10 ? '91' + cleanDigits : cleanDigits;
-            targetWa = `https://api.whatsapp.com/send?phone=${finalDigits}&text=${encodeURIComponent("🌿 *Mud & Meadows Resort - Stay Quotation*\n\n🏨 *Villa:* " + q.cottage_name + "\n📅 *Dates:* " + q.check_in + " to " + q.check_out + " (" + q.nights + " Nights)\n👥 *Guests:* " + q.adults + " Adults\n✨ *Total:* ₹" + q.grand_total.toLocaleString() + " (incl. GST)\n\nPlease confirm my reservation!")}`;
+            targetWa = buildWhatsAppShareUrl(q, finalDigits);
           }
           window.open(targetWa, '_blank');
-          appendMessage(`Opening WhatsApp with your quotation for ${q.cottage_name}! If the chat does not open, <a href="${targetWa}" target="_blank" style="color:#25D366;font-weight:bold;">tap here to open WhatsApp</a>.`, 'bot');
+          waDrawer.classList.add('hidden');
+          appendMessage(
+            `Opening WhatsApp with your quotation for <strong>${escapeHtml(q.cottage_name)}</strong>. If blocked by browser popup settings, <a href="${escapeHtml(targetWa)}" target="_blank" style="color:#25D366;font-weight:bold;">tap here to open WhatsApp</a>.`,
+            'bot',
+            true
+          );
         });
 
         qCard.querySelector('.reserve-btn').addEventListener('click', () => {
-          handleRazorpayCheckout(q);
+          waDrawer.classList.add('hidden');
+          checkoutDrawer.classList.toggle('hidden');
+          messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        });
+
+        qCard.querySelector('.checkout-cancel-btn').addEventListener('click', () => {
+          checkoutDrawer.classList.add('hidden');
+        });
+
+        qCard.querySelector('.checkout-confirm-btn').addEventListener('click', () => {
+          const guestName = qCard.querySelector('.guest-name-input').value.trim();
+          const guestEmail = qCard.querySelector('.guest-email-input').value.trim();
+          const guestPhone = qCard.querySelector('.guest-phone-input').value.trim();
+
+          if (!guestName || !guestEmail || !guestEmail.includes('@') || guestPhone.replace(/\D/g, '').length < 10) {
+            appendMessage('Please enter a valid full name, email address, and 10-digit phone number to proceed.', 'bot');
+            return;
+          }
+
+          checkoutDrawer.classList.add('hidden');
+          handleRazorpayCheckout(q, { guestName, guestEmail, guestPhone });
         });
 
         cardsContainer.appendChild(qCard);
@@ -200,13 +281,13 @@
         waCard.className = 'quote-card';
         waCard.style.borderColor = '#25D366';
         waCard.innerHTML = `
-          <div class="quote-header" style="color:#1b3b2b;">📲 WhatsApp Quotation Ready</div>
-          <div class="quote-row"><span>Villa:</span> <span>${card.cottage_name}</span></div>
-          <div class="quote-row"><span>Total:</span> <span>₹${(card.total_price || 0).toLocaleString()}</span></div>
-          <div class="quote-row"><span>Mobile:</span> <span>${card.phone}</span></div>
+          <div class="quote-header" style="color:#1b3b2b;">WhatsApp Quotation Ready</div>
+          <div class="quote-row"><span>Villa:</span> <span>${escapeHtml(card.cottage_name)}</span></div>
+          <div class="quote-row"><span>Total:</span> <span>₹${Number(card.total_price || 0).toLocaleString()}</span></div>
+          <div class="quote-row"><span>Mobile:</span> <span>${escapeHtml(card.phone)}</span></div>
           <div style="margin-top:10px;">
-            <a href="${card.whatsapp_url}" target="_blank" class="wa-btn" style="text-decoration:none;">
-              <span>📲</span> Open WhatsApp Chat Now
+            <a href="${escapeHtml(card.whatsapp_url)}" target="_blank" class="wa-btn" style="text-decoration:none;">
+              Open WhatsApp Chat Now
             </a>
           </div>
         `;
@@ -218,29 +299,47 @@
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
   }
 
-  // Razorpay Payment Handler
-  async function handleRazorpayCheckout(quote) {
-    appendMessage(`Initiating secure payment for <strong>₹${quote.grand_total.toLocaleString()}</strong>...`, 'bot');
+  async function handleRazorpayCheckout(quote, guestInfo) {
+    const { guestName, guestEmail, guestPhone } = guestInfo;
+    appendMessage(`Preparing secure server-authoritative order for <strong>${escapeHtml(quote.cottage_name)}</strong>...`, 'bot', true);
 
-    const guestName = prompt("Please enter primary Guest Name:", "Guest User") || "Guest User";
-    const guestEmail = prompt("Please enter your Email for Booking Voucher:", "guest@resort.com") || "guest@resort.com";
-    const guestPhone = prompt("Please enter Mobile Number:", "9876543210") || "9876543210";
+    const bookingData = {
+      guest_name: guestName,
+      guest_email: guestEmail,
+      guest_phone: guestPhone,
+      accommodation_id: quote.cottage_id,
+      check_in: quote.check_in,
+      check_out: quote.check_out,
+      total_price: quote.grand_total,
+    };
 
     try {
-      // 1. Create Razorpay Order via Backend
+      // Server computes authoritative amount from cottage_id + dates + GST
       const orderResp = await fetch(`${API_BASE}/api/payment/create-order`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          amount: quote.grand_total,
+          cottage_id: quote.cottage_id,
+          check_in: quote.check_in,
+          check_out: quote.check_out,
+          adults: quote.adults || 2,
+          children: quote.children || 0,
+          extra_beds: quote.extra_beds || 0,
+          coupon_code: quote.coupon_code || null,
+          session_id: sessionId,
+          booking_data: bookingData,
           receipt: `rcpt_${Date.now()}`,
-          notes: { guest_name: guestName, cottage_id: quote.cottage_id }
-        })
+          notes: { guest_name: guestName, cottage_id: quote.cottage_id },
+        }),
       });
+
       const orderData = await orderResp.json();
+      if (!orderResp.ok) {
+        throw new Error(orderData.detail || 'Could not initiate payment order.');
+      }
+
       const rzpOrder = orderData.order;
 
-      // 2. Open Razorpay Checkout Modal
       const options = {
         key: orderData.key_id || 'rzp_test_placeholder',
         amount: rzpOrder.amount,
@@ -251,13 +350,12 @@
         prefill: {
           name: guestName,
           email: guestEmail,
-          contact: guestPhone
+          contact: guestPhone,
         },
         theme: { color: '#1b3b2b' },
         handler: async function (response) {
-          appendMessage('Payment authorized! Confirming reservation with resort front-desk...', 'bot');
+          appendMessage('Payment authorized. Confirming reservation with front desk...', 'bot');
 
-          // 3. Verify Payment and Create Official Booking
           const verifyResp = await fetch(`${API_BASE}/api/payment/verify-and-book`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -265,43 +363,41 @@
               razorpay_order_id: response.razorpay_order_id || rzpOrder.id,
               razorpay_payment_id: response.razorpay_payment_id || 'pay_test_' + Date.now(),
               razorpay_signature: response.razorpay_signature || 'sig_verified',
-              booking_data: {
-                guest_name: guestName,
-                guest_email: guestEmail,
-                guest_phone: guestPhone,
-                accommodation_id: quote.cottage_id,
-                check_in: quote.check_in,
-                check_out: quote.check_out,
-                total_price: quote.grand_total
-              }
-            })
+              booking_data: bookingData,
+            }),
           });
 
           const verifyData = await verifyResp.json();
-          appendMessage(`🎉 <strong>Booking Confirmed!</strong><br><br>
-            <strong>Voucher ID:</strong> ${verifyData.booking_id || verifyData.booking?.id || '#MM-CONFIRMED'}<br>
-            <strong>Cottage:</strong> ${quote.cottage_name}<br>
-            <strong>Dates:</strong> ${quote.check_in} to ${quote.check_out}<br>
-            <strong>Guest:</strong> ${guestName} (${guestEmail})<br><br>
-            A confirmation voucher has been generated. We look forward to welcoming you to Mud & Meadows! 🌿`, 'bot');
-        }
+          if (!verifyResp.ok) {
+            appendMessage(`Verification error: ${escapeHtml(verifyData.detail || 'Payment rejected')}`, 'bot');
+            return;
+          }
+
+          const refId = escapeHtml(verifyData.booking_id || (verifyData.booking && verifyData.booking.id) || '#MM-CONFIRMED');
+          appendMessage(
+            `<strong>Booking Confirmed!</strong><br><br>
+            <strong>Voucher ID:</strong> ${refId}<br>
+            <strong>Cottage:</strong> ${escapeHtml(quote.cottage_name)}<br>
+            <strong>Dates:</strong> ${escapeHtml(quote.check_in)} to ${escapeHtml(quote.check_out)}<br>
+            <strong>Guest:</strong> ${escapeHtml(guestName)} (${escapeHtml(guestEmail)})<br><br>
+            We look forward to welcoming you to Mud &amp; Meadows.`,
+            'bot',
+            true
+          );
+        },
       };
 
       if (window.Razorpay) {
         const rzp = new window.Razorpay(options);
         rzp.open();
       } else {
-        // Fallback simulation if checkout script is blocked by browser adblockers
-        if (confirm("Simulate successful test payment?")) {
-          options.handler({ razorpay_payment_id: 'pay_simulated_' + Date.now() });
-        }
+        appendMessage('Razorpay checkout script could not load. Please disable content blockers for checkout.', 'bot');
       }
     } catch (err) {
-      appendMessage(`Error during payment setup: ${err.message}`, 'bot');
+      appendMessage(`Payment setup interrupted: ${escapeHtml(err.message)}`, 'bot');
     }
   }
 
-  // Send Text Message
   async function sendMessage(text) {
     const userText = text || chatInput.value.trim();
     if (!userText) return;
@@ -315,13 +411,17 @@
       const response = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, message: userText })
+        body: JSON.stringify({ session_id: sessionId, message: userText }),
       });
       const data = await response.json();
-      typingIndicator.innerHTML = data.text.replace(/\n/g, '<br>');
+      if (!response.ok) {
+        typingIndicator.textContent = data.detail || 'Service temporarily busy. Please try again shortly.';
+        return;
+      }
+      typingIndicator.innerHTML = formatSafeBotHtml(data.text);
       renderCards(data.cards);
     } catch (err) {
-      typingIndicator.innerHTML = 'Sorry, I encountered a connection issue. Please try again.';
+      typingIndicator.textContent = 'Connection error. Please verify your network and try again.';
     }
   }
 
@@ -330,10 +430,7 @@
     if (e.key === 'Enter') sendMessage();
   });
 
-  // =========================================================================
-  // VOICE INPUT (Hybrid: Web Speech API for instant live recognition
-  // + MediaRecorder for server-side Whisper / Gemini translation)
-  // =========================================================================
+  // Voice Recognition via Web Speech API (en-IN locale)
   let isRecording = false;
   let recognition = null;
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -342,12 +439,12 @@
     recognition = new SpeechRecognition();
     recognition.continuous = false;
     recognition.interimResults = true;
-    recognition.lang = 'en-IN'; // Default to English (India) to capture English words properly
+    recognition.lang = 'en-IN';
 
     recognition.onstart = () => {
       isRecording = true;
       voiceBtn.classList.add('recording');
-      chatInput.placeholder = '🎙️ Listening... speak now in English or Hindi';
+      chatInput.placeholder = 'Listening... speak in English or Hindi';
     };
 
     recognition.onresult = (event) => {
@@ -369,12 +466,11 @@
     };
 
     recognition.onerror = (event) => {
-      console.warn('Speech recognition status:', event.error);
       isRecording = false;
       voiceBtn.classList.remove('recording');
       chatInput.placeholder = 'Ask anything or request a booking...';
       if (event.error === 'not-allowed') {
-        alert('Please allow microphone permissions in your browser address bar.');
+        appendMessage('Please allow microphone access in your browser settings to use voice input.', 'bot');
       }
     };
   }
@@ -391,9 +487,7 @@
         recognition.stop();
       }
     } else {
-      // Fallback alert for non-supported browsers
-      alert('Your browser does not support Web Speech Recognition. Please type your message.');
+      appendMessage('Voice recognition is unavailable in this browser. Please type your inquiry.', 'bot');
     }
   });
-
 })();

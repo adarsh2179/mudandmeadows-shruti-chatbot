@@ -234,15 +234,16 @@ Include this tag immediately prior to the closing `</body>` tag:
 ## Repository File Structure & Module Responsibilities
 
 ```
-├── config.py                  # Pydantic Settings singleton; CORS whitelist, service endpoints
-├── resort_client.py           # Async HTTP client for live Cloud Run API with in-memory fallback
-├── pricing_engine.py          # Deterministic financial calculator for nights, GST, extra bedding
+├── config.py                  # Pydantic Settings singleton; CORS whitelist, rate limit & TTL config
+├── session_store.py           # Zero-cost SQLite WAL + bounded LRU store, idempotency, rate limiter
+├── resort_client.py           # Persistent HTTP connection pool + 30s TTL read-through catalog cache
+├── pricing_engine.py          # Deterministic Decimal (ROUND_HALF_UP) calculator for GST & tariffs
 ├── voice_service.py           # Speech processing service (Web Speech API + backend Whisper/Gemini)
 ├── notification_service.py    # Universal WhatsApp Click-to-Chat deep link generator
-├── agent.py                   # Multi-turn ReAct reasoning loop, tool execution, 503 backoff
-├── main.py                    # FastAPI application, CORS middleware, payment endpoints
+├── agent.py                   # Multi-turn ReAct loop, context window pruning, authenticated PII lookup
+├── main.py                    # FastAPI gateway, server-authoritative checkout, Razorpay webhooks
 ├── static/
-│   ├── widget.js              # Shadow DOM client SDK, Web Speech recognition, Razorpay modal
+│   ├── widget.js              # Shadow DOM SDK, inline guest forms (XSS-safe), Razorpay modal
 │   ├── widget.css             # Earth-toned resort UI theme isolated within the Shadow Root
 │   └── index.html             # Host page test harness for local development
 ├── docs/
@@ -303,12 +304,15 @@ Dispatches guest natural language input to the ReAct reasoning loop.
   ```
 
 ### 2. `POST /api/payment/create-order`
-Initiates a Razorpay payment order utilizing server-computed pricing.
+Creates an idempotent, server-authoritative Razorpay order using server-recalculated pricing (`cottage_id`, `check_in`, `check_out`). Ignores client-supplied totals and deduplicates duplicate retries for 15 minutes.
 
 ### 3. `POST /api/payment/verify-and-book`
-Validates HMAC-SHA256 signatures and finalizes the reservation in the resort system.
+Validates constant-time HMAC-SHA256 payment signatures and finalizes reservations idempotently.
 
-### 4. `GET /health`
+### 4. `POST /api/payment/webhook`
+Handles asynchronous server-to-server Razorpay `payment.captured` and `order.paid` webhook events using `X-Razorpay-Signature` cryptographic verification to recover bookings if a guest drops off before completing browser callbacks.
+
+### 5. `GET /health`
 Returns service availability, connected API endpoints, and environment status.
 
 ---
@@ -325,6 +329,11 @@ RESORT_API_BASE_URL=https://mudandmeadows-api-742259178550.asia-south1.run.app
 GEMINI_API_KEY=your_gemini_api_key_from_ai_studio
 RAZORPAY_KEY_ID=rzp_test_placeholder
 RAZORPAY_KEY_SECRET=placeholder_secret
+RAZORPAY_WEBHOOK_SECRET=your_webhook_secret
+SESSION_DB_PATH=concierge_state.db
+SESSION_TTL_SECONDS=1800
+RATE_LIMIT_CHAT_RPM=12
+RATE_LIMIT_PAYMENT_RPM=6
 ALLOWED_ORIGINS=https://mudandmeadows.in,https://www.mudandmeadows.in,http://localhost:8000
 ```
 

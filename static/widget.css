@@ -360,6 +360,79 @@
   background: #142e21;
 }
 
+/* Inline Luxury Input Drawers (Replaces native window.prompt popups) */
+.inline-drawer {
+  margin-top: 10px;
+  padding: 12px;
+  background: #f7faf8;
+  border: 1px solid #d4e0d8;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inline-drawer.hidden {
+  display: none;
+}
+
+.inline-drawer label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--primary-green);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.inline-drawer input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  font-size: 13px;
+  outline: none;
+  background: #ffffff;
+  color: #1e293b;
+}
+
+.inline-drawer input:focus {
+  border-color: var(--primary-green);
+}
+
+.inline-drawer-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.inline-submit-btn {
+  flex: 1;
+  background: #1b3b2b;
+  color: #ffffff;
+  border: none;
+  border-radius: 7px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.inline-submit-btn.wa-theme {
+  background: #25D366;
+}
+
+.inline-cancel-btn {
+  background: #e2e8f0;
+  color: #475569;
+  border: none;
+  border-radius: 7px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 /* Input Bar & Voice Recording Controls */
 .chat-footer {
   background: #ffffff;

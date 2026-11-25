@@ -38,3 +38,10 @@ wheels/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local SQLite State & Logs
+*.db
+*.db-wal
+*.db-shm
+*.sqlite*
+*.log

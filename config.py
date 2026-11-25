@@ -43,6 +43,28 @@ class Settings(BaseSettings):
         default="",
         description="Razorpay Secret Key used for server-side HMAC-SHA256 signature verification"
     )
+    RAZORPAY_WEBHOOK_SECRET: str = Field(
+        default="",
+        description="Razorpay Webhook Secret for server-to-server payment reconciliation"
+    )
+
+    # Session Persistence, Caching & Rate Limiting ($0.00 SQLite WAL + In-Memory TTL)
+    SESSION_DB_PATH: str = Field(
+        default="concierge_state.db",
+        description="SQLite WAL path for persistent conversation history and payment idempotency"
+    )
+    SESSION_TTL_SECONDS: int = Field(
+        default=1800,
+        description="Session inactivity expiration window in seconds (default 30 mins)"
+    )
+    RATE_LIMIT_CHAT_RPM: int = Field(
+        default=12,
+        description="Max chat requests per minute per client IP to protect Gemini quota"
+    )
+    RATE_LIMIT_PAYMENT_RPM: int = Field(
+        default=6,
+        description="Max payment order initiations per minute per client IP"
+    )
 
     # Security & CORS (Cross-Origin Resource Sharing)
     ALLOWED_ORIGINS: str = Field(
