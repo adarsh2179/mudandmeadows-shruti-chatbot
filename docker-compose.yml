@@ -14,9 +14,15 @@ services:
     environment:
       - PORT=8000
       - ENVIRONMENT=production
+      - SESSION_DB_PATH=/app/data/concierge_state.db
+    volumes:
+      - concierge_data:/app/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  concierge_data:

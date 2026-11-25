@@ -303,16 +303,19 @@ Dispatches guest natural language input to the ReAct reasoning loop.
   }
   ```
 
-### 2. `POST /api/payment/create-order`
+### 2. `GET /api/chat/history` & `POST /api/guest/identify`
+Supports returning-visitor continuity across page reloads and repeat visits. The client widget maintains an anonymous persistent identifier in `localStorage` (`mm_visitor_id`) instead of an upfront conversion-killing login wall, progressively binding optional guest profile preferences (name, email, phone) into SQLite `guest_profiles` when provided during quote or reservation interactions.
+
+### 3. `POST /api/payment/create-order`
 Creates an idempotent, server-authoritative Razorpay order using server-recalculated pricing (`cottage_id`, `check_in`, `check_out`). Ignores client-supplied totals and deduplicates duplicate retries for 15 minutes.
 
-### 3. `POST /api/payment/verify-and-book`
+### 4. `POST /api/payment/verify-and-book`
 Validates constant-time HMAC-SHA256 payment signatures and finalizes reservations idempotently.
 
-### 4. `POST /api/payment/webhook`
+### 5. `POST /api/payment/webhook`
 Handles asynchronous server-to-server Razorpay `payment.captured` and `order.paid` webhook events using `X-Razorpay-Signature` cryptographic verification to recover bookings if a guest drops off before completing browser callbacks.
 
-### 5. `GET /health`
+### 6. `GET /health`
 Returns service availability, connected API endpoints, and environment status.
 
 ---

@@ -151,12 +151,13 @@ An asynchronous client powered by a persistent singleton `httpx.AsyncClient` con
 4. **Client Drop-Off Protection (`POST /api/payment/webhook`)**: Server-to-server webhooks verify `X-Razorpay-Signature` and automatically recover captured payments if the guest closes their browser after UPI authentication.
 5. **Idempotency**: Duplicate taps within 15 minutes return the staged Razorpay `order_id` without re-triggering charges.
 
-### 4.5. Client SDK & Shadow DOM (`static/widget.js` & `widget.css`)
+### 4.5. Client SDK, Returning Visitor Continuity & Shadow DOM (`static/widget.js` & `widget.css`)
 To allow embedding on any CMS (WordPress, Webflow, React, Shopify):
 - Attaches an open **Shadow Root** (`element.attachShadow({ mode: 'open' })`) for strict CSS scope isolation.
 - Sanitizes all chat inputs and dynamic HTML rendering (`escapeHtml`) to mitigate XSS vulnerabilities.
+- **Returning Guest Continuity (Progressive Identity)**: Uses `localStorage` (`mm_visitor_id`) paired with SQLite `guest_profiles` and `GET /api/chat/history` instead of an upfront email/login barrier. Guests chat without friction, past bubbles survive page navigation across `mudandmeadows.in`, and contact details provided in WhatsApp or checkout drawers are remembered and pre-filled on repeat visits.
 - Replaces intrusive browser `window.prompt()` dialogs with inline luxury drawers inside the Shadow DOM for WhatsApp numbers and guest reservation details.
-- Employs native **Web Speech API** (`webkitSpeechRecognition`) configured for `en-IN` at zero server cost.
+- Employs native **Web Speech API** (`webkitSpeechRecognition`) configured for `en-IN` with an automatic `MediaRecorder` $\rightarrow$ `/api/voice/process` backend fallback for Safari iOS and Firefox.
 
 ### 4.6. WhatsApp Quotation Protocol (`notification_service.py`)
 Rather than integrating paid WhatsApp Business APIs (Twilio or Meta Cloud API, which charge per-conversation fees), the concierge generates pre-formatted, luxury markdown summaries via standard **Click-to-Chat deep links** (`https://api.whatsapp.com/send?text=...`). Guests tap once to forward quotes to their travel group or the resort reservations desk at zero cost.

@@ -135,11 +135,22 @@ TOOLS_DECLARATION = types.Tool(
 )
 
 
-def get_system_instruction(company_name: str) -> str:
+def get_system_instruction(company_name: str, guest_profile: Optional[Dict[str, Any]] = None) -> str:
     today = date.today()
+    returning_ctx = ""
+    if guest_profile and (guest_profile.get("name") or guest_profile.get("preferred_cottage")):
+        parts = []
+        if guest_profile.get("name"):
+            parts.append(f"Name: {guest_profile['name']}")
+        if guest_profile.get("preferred_cottage"):
+            parts.append(f"Previously viewed cottage: {guest_profile['preferred_cottage']}")
+        if guest_profile.get("visit_count", 1) > 1:
+            parts.append(f"Visit count: {guest_profile['visit_count']}")
+        returning_ctx = f"\nRETURNING GUEST CONTEXT: {', '.join(parts)}. Greet them warmly by name if appropriate without asking repeatedly for details already known."
+
     return f"""
 You are Shruti, the guest concierge for '{company_name}' luxury eco-resort.
-Today's Date: {today.isoformat()} ({today.strftime('%A')}). Use this date whenever guests refer to relative dates like "this weekend", "tomorrow", or "next month".
+Today's Date: {today.isoformat()} ({today.strftime('%A')}). Use this date whenever guests refer to relative dates like "this weekend", "tomorrow", or "next month".{returning_ctx}
 
 STRICT DOMAIN BOUNDARIES:
 - Represent ONLY '{company_name}': cottages, availability, pricing quotes, dining, wellness/spa, activities, and reservations.
@@ -216,6 +227,7 @@ class ResortAgent:
     async def chat(self, session_id: str, user_message: str) -> AgentResponse:
         """Processes guest input through the bounded multi-turn ReAct tool loop."""
         history, last_quote = session_store.get_session(session_id)
+        guest_profile = session_store.get_guest_profile(session_id)
 
         user_content = types.Content(
             role="user",
@@ -229,16 +241,18 @@ class ResortAgent:
         if lower_msg in pure_greetings or (
             len(lower_msg.split()) <= 2 and any(lower_msg == g for g in pure_greetings)
         ):
+            name_prefix = f" back, **{guest_profile['name']}**" if guest_profile and guest_profile.get("name") else ""
             greeting_text = (
-                f"Namaste! I am **Shruti**, your guest concierge at **{settings.COMPANY_NAME}**.\n\n"
+                f"Namaste{name_prefix}! I am **Shruti**, your guest concierge at **{settings.COMPANY_NAME}**.\n\n"
                 "I can help you explore our villas, calculate stay quotations with taxes, review dining and wellness programs, or confirm your booking. How may I assist you today?"
             )
             history.append(types.Content(role="model", parts=[types.Part.from_text(text=greeting_text)]))
             session_store.save_session(session_id, _trim_history(history), last_quote)
             return AgentResponse(text=greeting_text)
 
+        system_prompt = get_system_instruction(settings.COMPANY_NAME, guest_profile=guest_profile)
         config = types.GenerateContentConfig(
-            system_instruction=get_system_instruction(settings.COMPANY_NAME),
+            system_instruction=system_prompt,
             tools=[TOOLS_DECLARATION],
             temperature=0.2,
         )
@@ -271,7 +285,7 @@ class ResortAgent:
 
                     try:
                         tool_result, step_cards, step_action, step_payload, updated_quote = (
-                            await self._execute_tool(fn_name, fn_args, last_quote=last_quote)
+                            await self._execute_tool(fn_name, fn_args, last_quote=last_quote, session_id=session_id)
                         )
                     except Exception as tool_err:
                         logger.warning(f"Tool [{fn_name}] error handed back to agent: {tool_err}")
@@ -353,7 +367,7 @@ class ResortAgent:
         return AgentResponse(text=final_text, cards=cards, action=action, payload=payload)
 
     async def _execute_tool(
-        self, name: str, args: Dict[str, Any], last_quote: Optional[Dict[str, Any]] = None
+        self, name: str, args: Dict[str, Any], last_quote: Optional[Dict[str, Any]] = None, session_id: str = ""
     ):
         """Dispatches tool handlers, builds UI cards, and prunes bloated LLM context payloads."""
         cards: List[Dict[str, Any]] = []
@@ -495,6 +509,8 @@ class ResortAgent:
             whatsapp_url = notification_service.generate_whatsapp_link(payload)
             payload["whatsapp_url"] = whatsapp_url
             updated_quote = payload
+            if session_id:
+                session_store.upsert_guest_profile(visitor_id=session_id, preferred_cottage=quote.cottage_name)
 
             cards.append({
                 "type": "quote_card",
@@ -511,6 +527,9 @@ class ResortAgent:
                     "status": "no_quote",
                     "message": "No active stay quote exists in this session yet. Calculate a stay quote first before generating a WhatsApp dispatch."
                 }, cards, action, payload, updated_quote
+
+            if session_id and phone:
+                session_store.upsert_guest_profile(visitor_id=session_id, phone=phone)
 
             wa_url = notification_service.generate_whatsapp_link(quote_data, guest_phone=phone)
             cards.append({

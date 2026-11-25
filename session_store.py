@@ -9,6 +9,7 @@ Survives Uvicorn multi-worker restarts while preventing unbounded RAM growth.
 from collections import OrderedDict, deque
 from contextlib import closing
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -44,6 +45,9 @@ class SessionStore:
         return conn
 
     def _init_db(self) -> None:
+        parent_dir = os.path.dirname(os.path.abspath(self.db_path))
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
         with self._lock:
             with closing(self._connect()) as conn, conn:
                 conn.execute(
@@ -65,6 +69,19 @@ class SessionStore:
                         booking_payload_json TEXT,
                         status TEXT NOT NULL DEFAULT 'created',
                         created_at REAL NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS guest_profiles (
+                        visitor_id TEXT PRIMARY KEY,
+                        name TEXT,
+                        email TEXT,
+                        phone TEXT,
+                        preferred_cottage TEXT,
+                        visit_count INTEGER NOT NULL DEFAULT 1,
+                        updated_at REAL NOT NULL
                     )
                     """
                 )
@@ -237,6 +254,81 @@ class SessionStore:
                     (order_id,),
                 )
                 conn.commit()
+
+    # -------------------------------------------------------------------------
+    # RETURNING GUEST IDENTITY & UI HISTORY HYDRATION
+    # -------------------------------------------------------------------------
+
+    def get_display_history(self, session_id: str) -> List[Dict[str, str]]:
+        """Extracts human-readable chat turns (excluding internal tool JSON) for UI restoration."""
+        history, _ = self.get_session(session_id)
+        messages: List[Dict[str, str]] = []
+        for item in history:
+            if not item.parts:
+                continue
+            text_chunks = [p.text for p in item.parts if getattr(p, "text", None)]
+            if text_chunks and not any(getattr(p, "function_response", None) for p in item.parts):
+                messages.append({
+                    "role": "user" if item.role == "user" else "bot",
+                    "text": " ".join(text_chunks).strip(),
+                })
+        return messages
+
+    def upsert_guest_profile(
+        self,
+        visitor_id: str,
+        name: Optional[str] = None,
+        email: Optional[str] = None,
+        phone: Optional[str] = None,
+        preferred_cottage: Optional[str] = None,
+    ) -> None:
+        """Links progressive guest contact details to persistent visitor_id for return visits."""
+        if not visitor_id:
+            return
+        now = time.time()
+        clean_name = name.strip() if name else None
+        clean_email = email.strip().lower() if email else None
+        clean_phone = "".join(filter(str.isdigit, phone)) if phone else None
+        if clean_phone and len(clean_phone) > 10 and clean_phone.startswith("91"):
+            clean_phone = clean_phone[-10:]
+
+        with self._lock:
+            with closing(self._connect()) as conn, conn:
+                conn.execute(
+                    """
+                    INSERT INTO guest_profiles (visitor_id, name, email, phone, preferred_cottage, visit_count, updated_at)
+                    VALUES (?, ?, ?, ?, ?, 1, ?)
+                    ON CONFLICT(visitor_id) DO UPDATE SET
+                        name = COALESCE(excluded.name, guest_profiles.name),
+                        email = COALESCE(excluded.email, guest_profiles.email),
+                        phone = COALESCE(excluded.phone, guest_profiles.phone),
+                        preferred_cottage = COALESCE(excluded.preferred_cottage, guest_profiles.preferred_cottage),
+                        visit_count = guest_profiles.visit_count + 1,
+                        updated_at = excluded.updated_at
+                    """,
+                    (visitor_id, clean_name, clean_email, clean_phone, preferred_cottage, now),
+                )
+                conn.commit()
+
+    def get_guest_profile(self, visitor_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves returning guest profile metadata if previously captured."""
+        if not visitor_id:
+            return None
+        with self._lock:
+            with closing(self._connect()) as conn, conn:
+                row = conn.execute(
+                    "SELECT name, email, phone, preferred_cottage, visit_count FROM guest_profiles WHERE visitor_id = ?",
+                    (visitor_id,),
+                ).fetchone()
+                if not row:
+                    return None
+                return {
+                    "name": row[0],
+                    "email": row[1],
+                    "phone": row[2],
+                    "preferred_cottage": row[3],
+                    "visit_count": row[4],
+                }
 
 
 class SlidingWindowRateLimiter:

@@ -138,6 +138,13 @@ class VerifyAndBookRequest(BaseModel):
     booking_data: Dict[str, Any]
 
 
+class GuestIdentifyRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+
 # -----------------------------------------------------------------------------
 # API ROUTES
 # -----------------------------------------------------------------------------
@@ -166,6 +173,30 @@ async def chat_endpoint(payload: ChatRequest, request: Request):
     session_id = payload.session_id or str(uuid.uuid4())
     logger.info(f"Chat request received for session [{session_id}]")
     return await agent.chat(session_id=session_id, user_message=payload.message)
+
+
+@app.get("/api/chat/history", tags=["Conversational Agent"])
+async def chat_history_endpoint(session_id: str):
+    """Hydrates past chat bubbles and non-sensitive profile defaults across page transitions."""
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id query parameter is required.")
+    return {
+        "session_id": session_id,
+        "messages": session_store.get_display_history(session_id),
+        "guest_profile": session_store.get_guest_profile(session_id),
+    }
+
+
+@app.post("/api/guest/identify", tags=["Conversational Agent"])
+async def guest_identify_endpoint(payload: GuestIdentifyRequest):
+    """Progressively binds guest contact preferences to their persistent visitor_id without login friction."""
+    session_store.upsert_guest_profile(
+        visitor_id=payload.session_id,
+        name=payload.name,
+        email=payload.email,
+        phone=payload.phone,
+    )
+    return {"success": True}
 
 
 @app.post("/api/voice/process", response_model=VoiceChatResponse, tags=["Voice Processing"])
@@ -213,6 +244,14 @@ async def create_payment_order(payload: CreateOrderRequest, request: Request):
     trusting browser-submitted monetary totals.
     """
     _enforce_rate_limit(request, "payment", settings.RATE_LIMIT_PAYMENT_RPM)
+
+    if payload.session_id and payload.booking_data:
+        session_store.upsert_guest_profile(
+            visitor_id=payload.session_id,
+            name=payload.booking_data.get("guest_name"),
+            email=payload.booking_data.get("guest_email"),
+            phone=payload.booking_data.get("guest_phone"),
+        )
 
     if payload.cottage_id and payload.check_in and payload.check_out:
         try:

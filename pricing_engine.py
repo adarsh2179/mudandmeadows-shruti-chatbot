@@ -6,7 +6,7 @@ for booking calculations. Eliminates floating-point rounding drift and LLM arith
 hallucinations across nights, extra beds, promotional coupons, and Indian GST slabs.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
@@ -77,6 +77,11 @@ class PricingEngine:
             raise ValueError(
                 f"Invalid date format: '{check_in_str}' or '{check_out_str}'. Expected YYYY-MM-DD."
             ) from err
+
+        if check_in < date.today():
+            raise ValueError(
+                f"Check-in date ({check_in_str}) cannot be in the past."
+            )
 
         if check_out <= check_in:
             raise ValueError(

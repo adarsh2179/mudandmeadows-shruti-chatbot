@@ -10,10 +10,22 @@
   const scriptTag = document.currentScript || document.querySelector('script[data-resort-id]');
   const API_BASE = (scriptTag && scriptTag.getAttribute('data-api-base')) || window.location.origin;
 
-  let sessionId = sessionStorage.getItem('mm_chat_session_id');
+  // Persistent cross-tab / returning visitor identifier stored in localStorage
+  let sessionId = localStorage.getItem('mm_visitor_id') || sessionStorage.getItem('mm_chat_session_id');
   if (!sessionId) {
-    sessionId = 'session_' + Math.random().toString(36).substring(2, 11);
-    sessionStorage.setItem('mm_chat_session_id', sessionId);
+    sessionId = 'visitor_' + Math.random().toString(36).substring(2, 12) + '_' + Date.now().toString(36);
+  }
+  localStorage.setItem('mm_visitor_id', sessionId);
+
+  let guestProfile = { name: '', email: '', phone: '' };
+
+  function getDefaultDates() {
+    const checkIn = new Date(Date.now() + 86400000);
+    const checkOut = new Date(Date.now() + 3 * 86400000);
+    return {
+      checkIn: checkIn.toISOString().split('T')[0],
+      checkOut: checkOut.toISOString().split('T')[0],
+    };
   }
 
   if (!window.Razorpay) {
@@ -172,7 +184,8 @@
           </div>
         `;
         cCard.querySelector('.select-cottage-btn').addEventListener('click', () => {
-          sendMessage(`Calculate exact quote for ${card.name} (ID: ${card.id}) from ${card.check_in || '2026-12-01'} to ${card.check_out || '2026-12-03'} for 2 adults`);
+          const fallbackDates = getDefaultDates();
+          sendMessage(`Calculate exact quote for ${card.name} (ID: ${card.id}) from ${card.check_in || fallbackDates.checkIn} to ${card.check_out || fallbackDates.checkOut} for 2 adults`);
         });
         cardsContainer.appendChild(cCard);
       }
@@ -222,6 +235,16 @@
 
         const waDrawer = qCard.querySelector('.wa-drawer');
         const checkoutDrawer = qCard.querySelector('.checkout-drawer');
+        const waInput = qCard.querySelector('.wa-phone-input');
+        const nameInput = qCard.querySelector('.guest-name-input');
+        const emailInput = qCard.querySelector('.guest-email-input');
+        const phoneInput = qCard.querySelector('.guest-phone-input');
+
+        // Pre-populate saved returning guest contact preferences
+        if (guestProfile.phone) waInput.value = guestProfile.phone;
+        if (guestProfile.name) nameInput.value = guestProfile.name;
+        if (guestProfile.email) emailInput.value = guestProfile.email;
+        if (guestProfile.phone) phoneInput.value = guestProfile.phone;
 
         qCard.querySelector('.wa-btn').addEventListener('click', () => {
           checkoutDrawer.classList.add('hidden');
@@ -234,12 +257,18 @@
         });
 
         qCard.querySelector('.wa-confirm-btn').addEventListener('click', () => {
-          const rawPhone = qCard.querySelector('.wa-phone-input').value.trim();
+          const rawPhone = waInput.value.trim();
           let targetWa = defaultWaLink;
           if (rawPhone) {
             const cleanDigits = rawPhone.replace(/\D/g, '');
             const finalDigits = cleanDigits.length === 10 ? '91' + cleanDigits : cleanDigits;
             targetWa = buildWhatsAppShareUrl(q, finalDigits);
+            guestProfile.phone = cleanDigits;
+            fetch(`${API_BASE}/api/guest/identify`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ session_id: sessionId, phone: cleanDigits }),
+            }).catch(() => {});
           }
           window.open(targetWa, '_blank');
           waDrawer.classList.add('hidden');
@@ -261,15 +290,16 @@
         });
 
         qCard.querySelector('.checkout-confirm-btn').addEventListener('click', () => {
-          const guestName = qCard.querySelector('.guest-name-input').value.trim();
-          const guestEmail = qCard.querySelector('.guest-email-input').value.trim();
-          const guestPhone = qCard.querySelector('.guest-phone-input').value.trim();
+          const guestName = nameInput.value.trim();
+          const guestEmail = emailInput.value.trim();
+          const guestPhone = phoneInput.value.trim();
 
           if (!guestName || !guestEmail || !guestEmail.includes('@') || guestPhone.replace(/\D/g, '').length < 10) {
             appendMessage('Please enter a valid full name, email address, and 10-digit phone number to proceed.', 'bot');
             return;
           }
 
+          guestProfile = { name: guestName, email: guestEmail, phone: guestPhone };
           checkoutDrawer.classList.add('hidden');
           handleRazorpayCheckout(q, { guestName, guestEmail, guestPhone });
         });
@@ -430,9 +460,11 @@
     if (e.key === 'Enter') sendMessage();
   });
 
-  // Voice Recognition via Web Speech API (en-IN locale)
+  // Voice Recognition via Web Speech API + MediaRecorder Backend Fallback (iOS/Firefox)
   let isRecording = false;
   let recognition = null;
+  let mediaRecorder = null;
+  let audioChunks = [];
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
   if (SpeechRecognition) {
@@ -475,6 +507,56 @@
     };
   }
 
+  async function toggleMediaRecorderFallback() {
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      appendMessage('Voice recording is unsupported in this browser. Please type your message.', 'bot');
+      return;
+    }
+    if (!isRecording) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioChunks = [];
+        mediaRecorder = new MediaRecorder(stream);
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) audioChunks.push(e.data);
+        };
+        mediaRecorder.onstop = async () => {
+          stream.getTracks().forEach((t) => t.stop());
+          const blob = new Blob(audioChunks, { type: 'audio/webm' });
+          const formData = new FormData();
+          formData.append('audio', blob, 'voice.webm');
+          formData.append('session_id', sessionId);
+          const indicator = appendMessage('Transcribing voice note...', 'bot');
+          try {
+            const resp = await fetch(`${API_BASE}/api/voice/process`, { method: 'POST', body: formData });
+            const data = await resp.json();
+            if (resp.ok && data.agent_response) {
+              indicator.remove();
+              appendMessage(data.transcription, 'user');
+              appendMessage(data.agent_response.text, 'bot');
+              renderCards(data.agent_response.cards);
+            } else {
+              indicator.textContent = data.detail || 'Could not transcribe voice note.';
+            }
+          } catch (err) {
+            indicator.textContent = 'Voice upload failed. Please type your inquiry.';
+          }
+        };
+        mediaRecorder.start();
+        isRecording = true;
+        voiceBtn.classList.add('recording');
+        chatInput.placeholder = 'Recording voice... tap mic again to send';
+      } catch (err) {
+        appendMessage('Microphone access denied. Please allow permission in browser settings.', 'bot');
+      }
+    } else if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+      isRecording = false;
+      voiceBtn.classList.remove('recording');
+      chatInput.placeholder = 'Ask anything or request a booking...';
+    }
+  }
+
   voiceBtn.addEventListener('click', () => {
     if (recognition) {
       if (!isRecording) {
@@ -487,7 +569,31 @@
         recognition.stop();
       }
     } else {
-      appendMessage('Voice recognition is unavailable in this browser. Please type your inquiry.', 'bot');
+      toggleMediaRecorderFallback();
     }
   });
+
+  // Restore visual chat history & returning visitor profile on page navigation
+  (async function hydrateSession() {
+    try {
+      const resp = await fetch(`${API_BASE}/api/chat/history?session_id=${encodeURIComponent(sessionId)}`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.guest_profile) {
+        guestProfile = {
+          name: data.guest_profile.name || '',
+          email: data.guest_profile.email || '',
+          phone: data.guest_profile.phone || '',
+        };
+      }
+      if (Array.isArray(data.messages) && data.messages.length > 0) {
+        messagesContainer.innerHTML = '';
+        data.messages.forEach((m) => appendMessage(m.text, m.role === 'user' ? 'user' : 'bot'));
+      } else if (guestProfile.name) {
+        appendMessage(`Welcome back to Mud & Meadows, **${guestProfile.name}**! Let me know if you'd like to continue exploring stays.`, 'bot');
+      }
+    } catch (e) {
+      // Offline or first load gracefully falls back to default welcome bubble
+    }
+  })();
 })();

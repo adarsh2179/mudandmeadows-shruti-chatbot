@@ -29,8 +29,9 @@ FROM python:3.11-slim AS runner
 
 WORKDIR /app
 
-# Create a non-privileged system user for enterprise security
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+# Create non-privileged system user and writable SQLite data directory
+RUN groupadd -r appuser && useradd -r -g appuser appuser \
+    && mkdir -p /app/data && chown -R appuser:appuser /app
 
 # Copy installed python packages from builder
 COPY --from=builder /root/.local /home/appuser/.local
@@ -39,10 +40,12 @@ COPY --from=builder /root/.local /home/appuser/.local
 ENV PATH=/home/appuser/.local/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PORT=8000
+    PORT=8000 \
+    SESSION_DB_PATH=/app/data/concierge_state.db
 
 # Copy application source code and assets
 COPY --chown=appuser:appuser config.py .
+COPY --chown=appuser:appuser session_store.py .
 COPY --chown=appuser:appuser resort_client.py .
 COPY --chown=appuser:appuser pricing_engine.py .
 COPY --chown=appuser:appuser voice_service.py .
