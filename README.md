@@ -111,7 +111,7 @@ flowchart TD
     Router -->|JSON Response + UI Cards| Widget
     Widget -->|1-Tap Direct Message| WhatsApp
     Widget -->|Modal Checkout| RazorpayGateway
-    Widget -->|Interactive Render (Cards, Buttons, Quotes)| Guest
+    Widget -->|"Interactive Cards, Quotes & Actions"| Guest
 ```
 
 ---
