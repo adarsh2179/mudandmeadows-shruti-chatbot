@@ -26,6 +26,7 @@ Integrated directly with the resort's Cloud Run REST backend, this system handle
 - [Deterministic Financial Pricing Engine](#deterministic-financial-pricing-engine)
 - [Client SDK & Shadow DOM Encapsulation](#client-sdk--shadow-dom-encapsulation)
 - [Repository File Structure & Module Responsibilities](#repository-file-structure--module-responsibilities)
+- [Operating Cost Breakdown](#operating-cost-breakdown)
 - [Live Resort API Integration](#live-resort-api-integration)
 - [API Specifications & Endpoints](#api-specifications--endpoints)
 - [Environment Configuration](#environment-configuration)
@@ -79,17 +80,18 @@ flowchart TD
     subgraph Client Browser
         HostSite["Host Site (mudandmeadows.in)"]
         Widget["Concierge SDK (Shadow DOM)"]
-        SpeechAPI["Web Speech API (en-IN)"]
+        SpeechAPI["Web Speech API + MediaRecorder Fallback"]
         HostSite -.-> Widget
         Widget --- SpeechAPI
     end
 
     subgraph Backend Services [FastAPI Application Engine - Port 8000]
-        Router["ASGI Router & CORS Gateway (main.py)"]
-        Agent["ReAct Agent Execution Loop (agent.py)"]
+        Router["ASGI Router, CORS & Rate Limiter (main.py)"]
+        Agent["ReAct Agent Loop (agent.py)"]
+        StateStore[("SQLite WAL + LRU State & Guest Profiles (session_store.py)")]
         VoiceSvc["Voice Processing Service (voice_service.py)"]
-        Pricing["Deterministic Pricing Engine (pricing_engine.py)"]
-        ResortClient["Async Resort API Client (resort_client.py)"]
+        Pricing["Decimal Pricing Engine (pricing_engine.py)"]
+        ResortClient["Pooled Resort Client + 30s TTL Cache (resort_client.py)"]
     end
 
     subgraph External Cloud Services
@@ -100,14 +102,16 @@ flowchart TD
     end
 
     Guest -->|Text / Voice Input| Widget
-    Widget -->|JSON POST| Router
+    Widget -->|JSON / Form POST| Router
     Router --> VoiceSvc
     Router --> Agent
+    Router --- StateStore
+    Agent --- StateStore
     Agent <-->|Structured Tool Calling| Gemini
     Agent --> Pricing
     Agent --> ResortClient
     ResortClient <-->|Live Inventory, Dining, Spa| LiveResortAPI
-    Router <-->|Order Creation & HMAC Verification| RazorpayGateway
+    Router <-->|"Order Creation, HMAC Verify & Webhooks"| RazorpayGateway
     Router -->|JSON Response + UI Cards| Widget
     Widget -->|1-Tap Direct Message| WhatsApp
     Widget -->|Modal Checkout| RazorpayGateway
@@ -255,6 +259,19 @@ Include this tag immediately prior to the closing `</body>` tag:
 
 ---
 
+## Operating Cost Breakdown
+
+| Layer | Technology / Service | Pricing Model | Monthly Software Cost |
+| :--- | :--- | :--- | :--- |
+| **LLM Intelligence** | Google Gemini 3.5 Flash Lite | Google AI Studio Free Tier | **$0.00** |
+| **Voice Processing** | Web Speech API (en-IN) + Groq Whisper fallback | Native Browser + Free Tier | **$0.00** |
+| **Session & Idempotency** | SQLite (WAL mode) + In-Memory LRU Cache | Built-in Python Stdlib | **$0.00** |
+| **Rate Limiting** | Sliding-Window Token/IP Bucket | Built-in Python Stdlib | **$0.00** |
+| **Messaging** | WhatsApp Click-to-Chat (RFC 3986) | Open URL Deep-Link Protocol | **$0.00** |
+| **Hosting** | AWS EC2 (`t2.micro` / `t3.micro`) | AWS Free Tier (750 hrs/mo) | **$0.00** |
+
+---
+
 ## Live Resort API Integration
 
 The concierge interfaces with the resort's Cloud Run backend:
@@ -293,9 +310,10 @@ Dispatches guest natural language input to the ReAct reasoning loop.
         "quote": {
           "cottage_name": "The Rajasthan Family Villa",
           "nights": 2,
-          "base_price": 48000.0,
+          "base_room_rent": 48000.0,
+          "gst_percent": 18.0,
           "gst_amount": 8640.0,
-          "total_price": 56640.0
+          "grand_total": 56640.0
         }
       }
     ],
@@ -306,16 +324,19 @@ Dispatches guest natural language input to the ReAct reasoning loop.
 ### 2. `GET /api/chat/history` & `POST /api/guest/identify`
 Supports returning-visitor continuity across page reloads and repeat visits. The client widget maintains an anonymous persistent identifier in `localStorage` (`mm_visitor_id`) instead of an upfront conversion-killing login wall, progressively binding optional guest profile preferences (name, email, phone) into SQLite `guest_profiles` when provided during quote or reservation interactions.
 
-### 3. `POST /api/payment/create-order`
+### 3. `POST /api/voice/process`
+Accepts multipart audio blobs (`.webm`, `.wav`, `.mp3`) recorded by the widget's `MediaRecorder` fallback (for browsers lacking `SpeechRecognition` such as Safari iOS or Firefox), transcribes/translates regional speech via `voice_service.py` (Groq Whisper-Large-v3 / Gemini Multimodal), and routes the text directly into `agent.chat()`.
+
+### 4. `POST /api/payment/create-order`
 Creates an idempotent, server-authoritative Razorpay order using server-recalculated pricing (`cottage_id`, `check_in`, `check_out`). Ignores client-supplied totals and deduplicates duplicate retries for 15 minutes.
 
-### 4. `POST /api/payment/verify-and-book`
+### 5. `POST /api/payment/verify-and-book`
 Validates constant-time HMAC-SHA256 payment signatures and finalizes reservations idempotently.
 
-### 5. `POST /api/payment/webhook`
+### 6. `POST /api/payment/webhook`
 Handles asynchronous server-to-server Razorpay `payment.captured` and `order.paid` webhook events using `X-Razorpay-Signature` cryptographic verification to recover bookings if a guest drops off before completing browser callbacks.
 
-### 6. `GET /health`
+### 7. `GET /health`
 Returns service availability, connected API endpoints, and environment status.
 
 ---
