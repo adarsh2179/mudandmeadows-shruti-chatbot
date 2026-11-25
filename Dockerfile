@@ -1,0 +1,65 @@
+# ==============================================================================
+# Mud & Meadows Autonomous AI Concierge Dockerfile
+# Production-ready, secure, lightweight multi-stage container build
+# ==============================================================================
+
+FROM python:3.11-slim AS builder
+
+# Prevent Python from writing .pyc files and enable unbuffered logging
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Install build dependencies for C extensions
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install python dependencies to wheels directory
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+
+# ==============================================================================
+# Final Runtime Stage
+# ==============================================================================
+FROM python:3.11-slim AS runner
+
+WORKDIR /app
+
+# Create a non-privileged system user for enterprise security
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Copy installed python packages from builder
+COPY --from=builder /root/.local /home/appuser/.local
+
+# Ensure python binary path includes user site-packages
+ENV PATH=/home/appuser/.local/bin:$PATH \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PORT=8000
+
+# Copy application source code and assets
+COPY --chown=appuser:appuser config.py .
+COPY --chown=appuser:appuser resort_client.py .
+COPY --chown=appuser:appuser pricing_engine.py .
+COPY --chown=appuser:appuser voice_service.py .
+COPY --chown=appuser:appuser notification_service.py .
+COPY --chown=appuser:appuser agent.py .
+COPY --chown=appuser:appuser main.py .
+COPY --chown=appuser:appuser static/ ./static/
+
+# Switch to unprivileged runtime user
+USER appuser
+
+# Expose HTTP port
+EXPOSE 8000
+
+# Container healthcheck against /health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+
+# Start Uvicorn ASGI production server
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

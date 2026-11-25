@@ -1,0 +1,21 @@
+# Core Web & API Framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# Asynchronous HTTP Client for Resort API calls
+httpx>=0.27.0
+
+# Data Validation & Configuration Management
+pydantic>=2.8.0
+pydantic-settings>=2.4.0
+python-dotenv>=1.0.1
+
+# File & Audio Upload Handling (for voice notes / recordings)
+python-multipart>=0.0.9
+
+# Free GenAI & LLM Providers
+google-genai>=1.0.0
+groq>=0.9.0
+
+# Payment Gateway (Razorpay order & signature verification)
+razorpay>=1.4.1

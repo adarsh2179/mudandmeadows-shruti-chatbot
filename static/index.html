@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mud & Meadows Resort - Luxury Eco Retreat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <style>
+    :root {
+      --primary: #1b3b2b;
+      --gold: #c5a059;
+      --bg: #f9fbf8;
+      --text: #2d3748;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    header {
+      background: rgba(27, 59, 43, 0.95);
+      color: #fff;
+      padding: 20px 40px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(8px);
+    }
+    .logo {
+      font-family: 'Playfair Display', serif;
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      color: var(--gold);
+    }
+    nav a {
+      color: #fff;
+      text-decoration: none;
+      margin-left: 24px;
+      font-size: 14px;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+    nav a:hover { color: var(--gold); }
+
+    /* Hero Section */
+    .hero {
+      position: relative;
+      height: 75vh;
+      background: linear-gradient(rgba(27, 59, 43, 0.55), rgba(27, 59, 43, 0.75)),
+                  url('https://images.unsplash.com/photo-1566073771259-6a8506099945?w=1600') center/cover no-repeat;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      color: #fff;
+      padding: 20px;
+    }
+    .hero h1 {
+      font-family: 'Playfair Display', serif;
+      font-size: 52px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      color: #ffffff;
+    }
+    .hero p {
+      font-size: 20px;
+      max-width: 650px;
+      margin-bottom: 28px;
+      color: rgba(255, 255, 255, 0.9);
+    }
+    .hero-btn {
+      background: var(--gold);
+      color: var(--primary);
+      padding: 14px 32px;
+      border-radius: 30px;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 16px;
+      box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+      transition: transform 0.2s, background 0.2s;
+    }
+    .hero-btn:hover {
+      background: #d4af37;
+      transform: translateY(-2px);
+    }
+
+    /* Content Showcase */
+    .section {
+      max-width: 1200px;
+      margin: 60px auto;
+      padding: 0 20px;
+    }
+    .section h2 {
+      font-family: 'Playfair Display', serif;
+      font-size: 36px;
+      color: var(--primary);
+      text-align: center;
+      margin-bottom: 12px;
+    }
+    .section-subtitle {
+      text-align: center;
+      color: #718096;
+      margin-bottom: 40px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 30px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+      transition: transform 0.2s;
+    }
+    .card:hover { transform: translateY(-4px); }
+    .card img { width: 100%; height: 220px; object-fit: cover; }
+    .card-content { padding: 20px; }
+    .card-title { font-size: 20px; font-weight: 700; color: var(--primary); margin-bottom: 6px; }
+    .card-desc { font-size: 14px; color: #718096; margin-bottom: 16px; }
+
+    /* Test Banner */
+    .test-banner {
+      background: #eef5f0;
+      border: 1px solid rgba(27, 59, 43, 0.2);
+      border-radius: 12px;
+      padding: 24px;
+      margin-top: 40px;
+      text-align: center;
+    }
+    .test-banner h3 { color: var(--primary); margin-bottom: 8px; }
+    .test-banner code { background: #fff; padding: 4px 10px; border-radius: 6px; border: 1px solid #cbd5e0; font-family: monospace; }
+  </style>
+</head>
+<body>
+
+  <!-- Company Website Header -->
+  <header>
+    <div class="logo">MUD & MEADOWS</div>
+    <nav>
+      <a href="#villas">Villas</a>
+      <a href="#dining">Dining</a>
+      <a href="#wellness">Spa & Wellness</a>
+      <a href="#experiences">Experiences</a>
+    </nav>
+  </header>
+
+  <!-- Hero Banner -->
+  <section class="hero">
+    <h1>Where Earth Meets Elegance</h1>
+    <p>Escape to an untouched paradise where luxury villas, Ayurvedic wellness, and farm-to-table culinary experiences rejuvenate your senses.</p>
+    <a href="javascript:void(0)" onclick="document.querySelector('#mud-and-meadows-widget-root').shadowRoot.querySelector('#launcherBtn').click()" class="hero-btn">
+      Chat with AI Concierge
+    </a>
+  </section>
+
+  <!-- Villas Showcase -->
+  <div class="section" id="villas">
+    <h2>Signature Cottages & Villas</h2>
+    <p class="section-subtitle">Crafted with vernacular architecture, private sit-outs, and panoramic valley views.</p>
+
+    <div class="grid">
+      <div class="card">
+        <img src="https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?w=600" alt="Gujarat Villa">
+        <div class="card-content">
+          <div class="card-title">The Vibrant Gujarat Villa</div>
+          <p class="card-desc">Handcrafted kutchi earthen walls, private verandah, king bed, and complimentary farm breakfast.</p>
+        </div>
+      </div>
+      <div class="card">
+        <img src="https://images.unsplash.com/photo-1566073771259-6a8506099945?w=600" alt="Goa Villa">
+        <div class="card-content">
+          <div class="card-title">The Konkan Retreat – Goa Villa</div>
+          <p class="card-desc">Portuguese-inspired terracotta sanctuary with lush garden courtyard and outdoor rain shower.</p>
+        </div>
+      </div>
+      <div class="card">
+        <img src="https://images.unsplash.com/photo-1596394516093-501ba68a0ba6?w=600" alt="Bengal Villa">
+        <div class="card-content">
+          <div class="card-title">The Bengal Courtyard</div>
+          <p class="card-desc">Spacious estate villa with traditional central courtyard, antique teak wood decor, and plunge pool.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Testing Guide Notice -->
+    <div class="test-banner">
+      <h3>🌿 Chat with Shruti — Guest Concierge Active</h3>
+      <p>Look at the <strong>bottom-right corner</strong> to launch your personal conversation with Shruti!</p>
+      <p style="margin-top: 8px; font-size: 14px; color: #4a5568;">
+        Try speaking or typing: <code>"Namaste Shruti, calculate expenditure for 3 bedrooms for 3 nights"</code> or <code>"What dining options do you have?"</code>
+      </p>
+    </div>
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- SINGLE-LINE COMPANY WEBSITE EMBED SCRIPT                                   -->
+  <!-- ========================================================================= -->
+  <script src="/static/widget.js" data-resort-id="mud-and-meadows" async></script>
+
+</body>
+</html>
