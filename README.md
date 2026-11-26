@@ -8,7 +8,7 @@
 [![Operating Cost](https://img.shields.io/badge/Operating_Cost-$0.00-brightgreen.svg?style=flat)](#operating-cost-breakdown)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-An autonomous AI Concierge chatbot engineered for **Mud & Meadows Resort** ([mudandmeadows.in](https://mudandmeadows.in/)).
+An autonomous AI Concierge chatbot engineered by **[Adarsh Tiwari](https://github.com/adarsh2179)** for **Mud & Meadows Resort** ([mudandmeadows.in](https://mudandmeadows.in/)).
 
 Integrated directly with the resort's Cloud Run REST backend, this system handles real-time villa inventory discovery, deterministic multi-room pricing calculations with exact Indian GST tax slabs, 1-tap WhatsApp quotation dispatch, and in-chat room reservations powered by Razorpay. Built to operate at **$0.00 ongoing software cost** using Google Gemini free tier quotas and standard client protocols.
 
@@ -452,4 +452,4 @@ Key architectural contributions for technical interviews and resume highlights:
 
 ## License
 
-Proprietary & Confidential — Engineered for **Mud & Meadows Resort** ([mudandmeadows.in](https://mudandmeadows.in/)). Open-source release under the [MIT License](LICENSE).
+Copyright (c) 2026 **Adarsh Tiwari**. Engineered for **Mud & Meadows Resort** ([mudandmeadows.in](https://mudandmeadows.in/)). Open-source release under the [MIT License](LICENSE).

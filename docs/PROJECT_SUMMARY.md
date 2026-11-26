@@ -1,6 +1,6 @@
 # Mud & Meadows Resort — AI Concierge System Architecture & Project Dossier
 
-**Author / Maintainer**: Engineering Team  
+**Author / Maintainer**: Adarsh Tiwari  
 **Target Deployment**: [mudandmeadows.in](https://mudandmeadows.in/)  
 **Environment**: Production Ready (Python 3.11+, FastAPI, Docker, Google Gemini 3.5 Flash Lite)  
 **Operating Cost**: $0.00 / month (Zero Ongoing SaaS Overhead)
