@@ -16,13 +16,14 @@ import hmac
 import json
 import logging
 import os
+import re
 import uuid
 from typing import Any, Dict, Optional
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from config import settings
 from resort_client import resort_client, ResortAPIError
@@ -108,6 +109,14 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(default=None, description="Client session ID")
     message: str = Field(min_length=1, max_length=2000, description="Guest text inquiry")
 
+    @field_validator("message")
+    @classmethod
+    def reject_blank_message(cls, v: str) -> str:
+        cleaned = v.strip()
+        if not cleaned:
+            raise ValueError("Message cannot be empty or whitespace only.")
+        return cleaned
+
 
 class VoiceChatResponse(BaseModel):
     success: bool
@@ -129,6 +138,16 @@ class CreateOrderRequest(BaseModel):
     amount: Optional[float] = Field(default=None, gt=0, description="Accepted only in local sandbox tests when cottage details omitted")
     receipt: Optional[str] = None
     notes: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+    @field_validator("cottage_id")
+    @classmethod
+    def validate_cottage_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        clean = v.strip()
+        if not re.match(r"^[a-zA-Z0-9_-]{1,64}$", clean) or clean.lower() in {"none", "null", "undefined", "nan"}:
+            raise ValueError("Invalid cottage_id format.")
+        return clean
 
 
 class VerifyAndBookRequest(BaseModel):
@@ -278,10 +297,12 @@ async def create_payment_order(payload: CreateOrderRequest, request: Request):
             )
         authoritative_amount = float(payload.amount)
 
+    guest_email_key = str((payload.booking_data or {}).get("guest_email") or "").strip().lower()
     idem_raw = (
         f"{payload.session_id or _extract_client_ip(request)}:"
         f"{payload.cottage_id}:{payload.check_in}:{payload.check_out}:"
-        f"{payload.adults}:{payload.extra_beds}:{payload.coupon_code or ''}:{authoritative_amount}"
+        f"{payload.adults}:{payload.children}:{payload.extra_beds}:"
+        f"{payload.coupon_code or ''}:{authoritative_amount}:{guest_email_key}"
     )
     idempotency_key = hashlib.sha256(idem_raw.encode("utf-8")).hexdigest()
 

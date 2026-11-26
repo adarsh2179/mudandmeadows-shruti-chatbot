@@ -416,12 +416,14 @@ curl http://localhost:8000/health
 
 ---
 
-## Cloud Deployment (AWS Free Tier)
+## Cloud Deployment (AWS Free Tier & Cardless Docker Options)
 
-Deploy to an **Ubuntu 22.04 LTS** EC2 instance (`t2.micro` or `t3.micro`):
+The container dynamically binds `${PORT:-8000}` via `Dockerfile`, supporting AWS, GCP Cloud Run, Render, and Koyeb without modification.
 
+### Option A: AWS Free Tier (EC2 Ubuntu 22.04 `t2.micro` / `t3.micro`)
+1. Register through AWS India (AISPL supports Visa, MasterCard, Amex, and eligible RuPay cards with international e-commerce enabled).
+2. Launch an Ubuntu 22.04 Free Tier instance opening inbound ports `22`, `80`, `443`, and `8000`:
 ```bash
-# On the EC2 instance:
 git clone https://github.com/adarsh2179/mudandmeadows-shruti-chatbot.git
 cd mudandmeadows-shruti-chatbot
 cp .env.example .env
@@ -429,6 +431,10 @@ cp .env.example .env
 chmod +x deploy_aws.sh
 ./deploy_aws.sh
 ```
+
+### Option B: Cardless Instant Docker Hosting (Render / Koyeb)
+1. Connect this GitHub repository as a **Docker Web Service** on Render or Koyeb (no card required on free tier; provides automatic HTTPS for `https://mudandmeadows.in/` embed safety).
+2. Add environment variables (`GEMINI_API_KEY`, `ALLOWED_ORIGINS`, etc.) and deploy.
 
 ---
 

@@ -237,10 +237,14 @@ class ResortAgent:
         history = _trim_history(history)
 
         lower_msg = user_message.lower().strip()
-        pure_greetings = {"hi", "hello", "hey", "namaste", "pranam", "नमस्ते", "हेलो"}
-        if lower_msg in pure_greetings or (
-            len(lower_msg.split()) <= 2 and any(lower_msg == g for g in pure_greetings)
-        ):
+        clean_greet = " ".join(lower_msg.rstrip("!?.,:;~ ").split())
+        pure_greetings = {
+            "hi", "hii", "hiii", "hello", "hey", "heyy", "namaste", "pranam",
+            "नमस्ते", "हेलो", "good morning", "good afternoon", "good evening",
+            "hi there", "hello there", "hey there",
+            "hi shruti", "hello shruti", "hey shruti", "namaste shruti",
+        }
+        if clean_greet in pure_greetings:
             name_prefix = f" back, **{guest_profile['name']}**" if guest_profile and guest_profile.get("name") else ""
             greeting_text = (
                 f"Namaste{name_prefix}! I am **Shruti**, your guest concierge at **{settings.COMPANY_NAME}**.\n\n"

@@ -6,11 +6,14 @@ and a short-TTL read-through cache for catalog data, minimizing TLS handshake
 overhead across multi-turn tool executions.
 """
 
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from config import settings
+
+_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 class ResortAPIError(Exception):
@@ -97,13 +100,17 @@ class ResortClient:
 
     async def get_cottage_details(self, cottage_id: str) -> Dict[str, Any]:
         """Fetches detailed specifications and rate card for a specific cottage."""
-        cache_key = f"cottage:{cottage_id}"
+        clean_id = (cottage_id or "").strip()
+        if not _SAFE_ID_RE.match(clean_id) or clean_id.lower() in {"none", "null", "undefined", "nan"}:
+            raise ResortAPIError(400, "Invalid cottage ID format.")
+
+        cache_key = f"cottage:{clean_id}"
         cached = self._get_cached(cache_key)
         if cached is not None:
             return cached
 
         client = await self._get_pool()
-        response = await client.get(f"/api/cottages/{cottage_id}")
+        response = await client.get(f"/api/cottages/{clean_id}")
         if response.status_code != 200:
             raise ResortAPIError(response.status_code, response.text)
         data = response.json()

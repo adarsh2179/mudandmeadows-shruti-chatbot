@@ -210,7 +210,7 @@
             <button class="reserve-btn">Reserve Villa Online</button>
           </div>
 
-          <!-- Inline WhatsApp Drawer (no window.prompt) -->
+          <!-- Inline WhatsApp Drawer -->
           <div class="inline-drawer wa-drawer hidden">
             <label>WhatsApp Mobile Number (Optional)</label>
             <input type="tel" class="wa-phone-input" placeholder="10-digit number (leave blank to pick chat)"/>

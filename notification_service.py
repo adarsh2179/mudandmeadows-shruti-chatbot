@@ -66,7 +66,11 @@ class NotificationService:
         encoded_text = urllib.parse.quote("\n".join(lines))
 
         clean_phone = "".join(filter(str.isdigit, guest_phone or ""))
-        if len(clean_phone) == 10:
+        if len(clean_phone) == 11 and clean_phone.startswith("0"):
+            clean_phone = "91" + clean_phone[1:]
+        elif len(clean_phone) == 13 and clean_phone.startswith("910"):
+            clean_phone = "91" + clean_phone[3:]
+        elif len(clean_phone) == 10:
             clean_phone = "91" + clean_phone
         if clean_phone and len(clean_phone) >= 11:
             return f"https://api.whatsapp.com/send?phone={clean_phone}&text={encoded_text}"

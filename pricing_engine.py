@@ -7,7 +7,7 @@ hallucinations across nights, extra beds, promotional coupons, and Indian GST sl
 """
 
 from datetime import date, datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
@@ -18,7 +18,15 @@ TWO_PLACES = Decimal("0.01")
 
 def _to_decimal(val: Any) -> Decimal:
     """Converts numeric input to Decimal via string representation to avoid binary float noise."""
-    return Decimal(str(val or 0))
+    if val is None or val == "":
+        return Decimal("0")
+    try:
+        d = Decimal(str(val).strip())
+    except InvalidOperation as err:
+        raise ValueError(f"Invalid numeric monetary value: {val}") from err
+    if not d.is_finite():
+        raise ValueError(f"Non-finite monetary value: {val}")
+    return d
 
 
 def _round_currency(val: Decimal) -> float:
@@ -113,18 +121,29 @@ class PricingEngine:
         """
         Generates an exact, auditable PriceQuote using Decimal arithmetic.
         """
+        if adults < 1:
+            raise ValueError("At least 1 adult guest is required for a stay quotation.")
+        if children < 0:
+            raise ValueError("Children count cannot be negative.")
+
         nights = self.parse_and_validate_dates(check_in_str, check_out_str)
         nights_dec = Decimal(nights)
 
         cottage_id = str(cottage.get("id") or cottage.get("_id") or "")
         cottage_name = cottage.get("name", "Resort Cottage")
-        price_per_night = _to_decimal(
+        raw_rate = (
             cottage.get("price_per_night")
-            or cottage.get("price")
-            or cottage.get("offer_price")
-            or 0
+            if cottage.get("price_per_night") is not None
+            else (
+                cottage.get("price")
+                if cottage.get("price") is not None
+                else cottage.get("offer_price")
+            )
         )
-        extra_bed_unit_price = _to_decimal(cottage.get("extra_bedding_price") or 1500)
+        price_per_night = _to_decimal(raw_rate)
+        if price_per_night < Decimal("0.00"):
+            raise ValueError("Cottage nightly tariff cannot be negative.")
+        extra_bed_unit_price = max(Decimal("0.00"), _to_decimal(cottage.get("extra_bedding_price") or 1500))
 
         base_room_rent = price_per_night * nights_dec
         extra_bed_total = Decimal(max(0, extra_beds)) * extra_bed_unit_price * nights_dec
@@ -144,11 +163,13 @@ class PricingEngine:
         if clean_coupon:
             try:
                 quote_resp = await resort_client.quote_coupon(clean_coupon, _round_currency(subtotal))
+                raw_disc = None
                 if quote_resp and "discount" in quote_resp:
-                    coupon_discount = _to_decimal(quote_resp["discount"])
-                    coupon_valid = True
+                    raw_disc = _to_decimal(quote_resp["discount"])
                 elif quote_resp and "discount_amount" in quote_resp:
-                    coupon_discount = _to_decimal(quote_resp["discount_amount"])
+                    raw_disc = _to_decimal(quote_resp["discount_amount"])
+                if raw_disc is not None and raw_disc >= Decimal("0.00"):
+                    coupon_discount = min(subtotal, raw_disc)
                     coupon_valid = True
             except Exception:
                 coupon_valid = False
